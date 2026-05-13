@@ -1,0 +1,16 @@
+[project]
+name = "ydbi-whisper"
+version = "0.1.0"
+requires-python = ">=3.12"
+dependencies = [
+  "mysql-connector-python>=9.0.0",
+  "openai-whisper",
+  "pydub",
+]
+
+[project.scripts]
+ydbi-whisper = "ydbi_whisper.main:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
