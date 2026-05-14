@@ -8,14 +8,21 @@ from typing import Any
 
 import mysql.connector
 
+from . import video_info
 from .config import MYSQL_CONFIG
 from .stages import FAILED, READY, RUNNING, SUCCESS, stage_for
 
 HEARTBEAT_TABLE = "yd_service_heartbeat"
-HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP")
+HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 _heartbeat_schema_ready = False
+
+
+def _row_value(row: Any, index: int = 0) -> Any:
+    if isinstance(row, Mapping):
+        return list(row.values())[index]
+    return row[index]
 
 
 def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
@@ -27,7 +34,7 @@ def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
         """,
         (table,),
     )
-    existing = {row[0] for row in cur.fetchall()}
+    existing = {_row_value(row) for row in cur.fetchall()}
     for name, definition in columns.items():
         if name not in existing:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
@@ -150,6 +157,10 @@ def _operator_value() -> str:
     return os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
 
 
+def current_operator() -> str:
+    return _operator_value()
+
+
 def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
     for table in tables:
         cur.execute(
@@ -160,7 +171,7 @@ def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
             """,
             (table,),
         )
-        if cur.fetchone()[0] == 0:
+        if _row_value(cur.fetchone()) == 0:
             continue
 
         cur.execute(
@@ -171,7 +182,7 @@ def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
             """,
             (table, OPERATOR_COLUMN),
         )
-        if cur.fetchone()[0] > 0:
+        if _row_value(cur.fetchone()) > 0:
             continue
 
         try:
@@ -211,7 +222,7 @@ def ensure_service_heartbeat_schema() -> None:
             """,
             (HEARTBEAT_TABLE,),
         )
-        existing = {row[0] for row in cur.fetchall()}
+        existing = {_row_value(row) for row in cur.fetchall()}
         for column in HEARTBEAT_DEVICE_COLUMNS:
             if column not in existing:
                 try:
@@ -250,9 +261,20 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         task = cur.fetchone()
         if not task:
             return None
-        cur.execute("SELECT session_path FROM yd_downloader WHERE task_id = %s", (task_id,))
-        task["downloader"] = cur.fetchone()
+        task["video_info"] = video_info.get(task_id)
         return task
+
+
+def demucs_operator_for(task_id: str) -> str | None:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        _ensure_operator_columns(cur, ("yd_demucs",))
+        cur.execute("SELECT `operator` FROM yd_demucs WHERE task_id = %s", (task_id,))
+        row = cur.fetchone()
+        if not row:
+            return None
+        operator = row.get("operator")
+        return str(operator).strip() if operator else None
 
 
 def find_ready(stage_name: str) -> dict[str, Any] | None:
@@ -263,7 +285,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             f"SELECT * FROM {stage.table} WHERE status = %s ORDER BY task_id ASC LIMIT 1",
             (READY,),
         )
-        return cur.fetchone()
+        return video_info.merge_into(cur.fetchone())
 
 
 def mark_running(stage_name: str, task_id: str) -> bool:
@@ -311,15 +333,15 @@ def _update_stage_fields(stage_name: str, task_id: str, fields: Mapping[str, Any
 
 
 def set_translator_asr_json_path(task_id: str, asr_json_path: str) -> None:
-    _update_stage_fields("translator", task_id, {"asr_json_path": asr_json_path})
+    video_info.upsert(task_id, {"asr_json_path": asr_json_path})
 
 
 def session_path_for(task_id: str) -> Path:
     task = get_task(task_id)
     if not task:
         raise RuntimeError(f"Task not found: {task_id}")
-    downloader = task["downloader"]
-    session_path = downloader.get("session_path") if downloader else None
+    info = task.get("video_info") or {}
+    session_path = info.get("session_path")
     if not session_path:
         raise RuntimeError(f"Task missing downloader session_path: {task_id}")
     return Path(session_path)
@@ -328,15 +350,17 @@ def session_path_for(task_id: str) -> Path:
 def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | None = None) -> None:
     stage = stage_for(stage_name)
     fields = dict(outputs or {})
+    stage_fields = {key: value for key, value in fields.items() if key not in video_info.COLUMNS}
     assignments = ["status = %s", "completed_at = NOW()", "error_message = NULL"]
     values: list[Any] = [SUCCESS]
-    for key, value in fields.items():
+    for key, value in stage_fields.items():
         assignments.append(f"{key} = %s")
         values.append(value)
     values.append(task_id)
 
     with connect() as conn:
         cur = conn.cursor()
+        video_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {stage.table} SET {', '.join(assignments)} WHERE task_id = %s",
             values,
