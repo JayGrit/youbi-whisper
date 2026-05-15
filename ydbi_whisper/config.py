@@ -13,8 +13,9 @@ MYSQL_CONFIG = {
     "database": "youbi",
 }
 
-WORKFOLDER = Path("/Users/hoshuuch/Money/YouBi/workfolder").expanduser()
-WORK_DIR = Path(os.environ.get("YDBI_WHISPER_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi" / "whisper")).expanduser()
+WORK_ROOT = Path(os.environ.get("YDBI_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi")).expanduser()
+WORKFOLDER = WORK_ROOT
+WORK_DIR = Path(os.environ.get("YDBI_WHISPER_WORK_DIR", WORK_ROOT / "whisper")).expanduser()
 POLL_INTERVAL_SECONDS = 10
 
 COOKIE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/cookies").expanduser()
