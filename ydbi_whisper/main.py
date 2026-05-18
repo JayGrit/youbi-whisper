@@ -5,6 +5,7 @@ import shutil
 from pathlib import Path
 
 from ydbi_whisper import db
+from ydbi_whisper.asr_segments import fix_asr_segment_rows
 from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
@@ -50,16 +51,33 @@ def handle(row: dict) -> dict[str, str]:
             source.asr_language,
         )
         data = recognize_speech(vocals, session, language=source.asr_language)
-        db.save_asr_result(task_id, source.asr_language, data, "raw")
-        utterances = data["result"]["utterances"]
-        word_count = sum(len(item.get("words") or []) for item in utterances)
-        log.info("whisper recognized task=%s segments=%d words=%d", task_id, len(utterances), word_count)
+        raw_segments = db.save_asr_result(task_id, source.asr_language, data, "raw")
+        duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
+        full_text = str((data.get("result") or {}).get("text") or "")
+        fixed_segments = fix_asr_segment_rows(raw_segments, duration_ms)
+        db.save_asr_segments(
+            task_id,
+            "fixed",
+            fixed_segments,
+            language=source.asr_language,
+            duration_ms=duration_ms,
+            full_text=full_text,
+        )
+        word_count = sum(len(item.get("words") or []) for item in raw_segments)
+        log.info(
+            "whisper recognized task=%s raw_segments=%d fixed_segments=%d words=%d",
+            task_id,
+            len(raw_segments),
+            len(fixed_segments),
+            word_count,
+        )
     finally:
         shutil.rmtree(session, ignore_errors=True)
 
     asr_ref = f"db://yd_asr_segment/{task_id}/raw"
-    log.info("whisper output task=%s asr_ref=%s", task_id, asr_ref)
-    return {"asr_json_path": asr_ref}
+    fixed_asr_ref = f"db://yd_asr_segment/{task_id}/fixed"
+    log.info("whisper output task=%s asr_ref=%s fixed_asr_ref=%s", task_id, asr_ref, fixed_asr_ref)
+    return {"asr_json_path": asr_ref, "asr_fixed_json_path": fixed_asr_ref}
 
 
 def main() -> None:

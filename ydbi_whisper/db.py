@@ -9,6 +9,7 @@ from typing import Any
 import mysql.connector
 
 from . import video_info
+from .asr_segments import normalize_asr_segments
 from .config import MYSQL_CONFIG
 from .stages import FAILED, READY, RUNNING, SUCCESS, stage_for
 
@@ -85,30 +86,39 @@ def ensure_asr_schema() -> None:
         conn.commit()
 
 
-def save_asr_result(task_id: str, language: str, payload: dict[str, Any], segment_type: str = "raw") -> None:
+def save_asr_segments(
+    task_id: str,
+    segment_type: str,
+    segments: list[dict[str, Any]],
+    *,
+    language: str | None = None,
+    duration_ms: int | None = None,
+    full_text: str | None = None,
+) -> None:
     ensure_asr_schema()
-    audio_info = payload.get("audio_info") or {}
-    result = payload.get("result") or {}
-    utterances = result.get("utterances") or []
-    duration_ms = int(audio_info.get("duration") or 0)
-    full_text = str(result.get("text") or "")
     with connect() as conn:
         cur = conn.cursor()
+        if language is not None or duration_ms is not None or full_text is not None:
+            cur.execute(
+                """
+                INSERT INTO yd_asr_result (task_id, language, duration_ms, full_text)
+                VALUES (%s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  language = COALESCE(VALUES(language), language),
+                  duration_ms = IF(VALUES(duration_ms) = 0, duration_ms, VALUES(duration_ms)),
+                  full_text = COALESCE(VALUES(full_text), full_text)
+                """,
+                (task_id, language, int(duration_ms or 0), full_text),
+            )
         cur.execute(
-            """
-            INSERT INTO yd_asr_result (task_id, language, duration_ms, full_text)
-            VALUES (%s, %s, %s, %s)
-            ON DUPLICATE KEY UPDATE
-              language = VALUES(language),
-              duration_ms = VALUES(duration_ms),
-              full_text = VALUES(full_text)
-            """,
-            (task_id, language, duration_ms, full_text),
+            "DELETE FROM yd_asr_segment WHERE task_id = %s AND segment_type = %s",
+            (task_id, segment_type),
         )
-        for index, item in enumerate(utterances):
-            additions = item.get("additions") or {}
-            speaker = str(additions.get("speaker") or "") if isinstance(additions, dict) else ""
+        for index, item in enumerate(segments):
             words = item.get("words")
+            words_json = item.get("words_json")
+            if words_json is None and words is not None:
+                words_json = json.dumps(words, ensure_ascii=False)
             cur.execute(
                 """
                 INSERT INTO yd_asr_segment
@@ -128,11 +138,28 @@ def save_asr_result(task_id: str, language: str, payload: dict[str, Any], segmen
                     str(item.get("text") or "").strip(),
                     int(item.get("start_time") or 0),
                     int(item.get("end_time") or 0),
-                    speaker or None,
-                    json.dumps(words, ensure_ascii=False) if words is not None else None,
+                    str(item.get("speaker") or "") or None,
+                    words_json,
                 ),
             )
         conn.commit()
+
+
+def save_asr_result(task_id: str, language: str, payload: dict[str, Any], segment_type: str = "raw") -> list[dict[str, Any]]:
+    audio_info = payload.get("audio_info") or {}
+    result = payload.get("result") or {}
+    duration_ms = int(audio_info.get("duration") or 0)
+    full_text = str(result.get("text") or "")
+    segments = normalize_asr_segments(result.get("utterances") or [])
+    save_asr_segments(
+        task_id,
+        segment_type,
+        segments,
+        language=language,
+        duration_ms=duration_ms,
+        full_text=full_text,
+    )
+    return segments
 
 
 def connect():
