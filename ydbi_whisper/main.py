@@ -14,6 +14,8 @@ from ydbi_whisper.worker import run_polling_worker
 
 log = logging.getLogger(__name__)
 
+MAX_ASR_SEGMENTS = 300
+
 
 def _download_destination(session: Path, source_ref: str) -> Path:
     suffix = Path(source_ref.split("?", 1)[0]).suffix or ".wav"
@@ -52,6 +54,8 @@ def handle(row: dict) -> dict[str, str]:
         )
         data = recognize_speech(vocals, session, language=source.asr_language)
         raw_segments = db.save_asr_result(task_id, source.asr_language, data, "raw")
+        if len(raw_segments) > MAX_ASR_SEGMENTS:
+            raise ValueError(f"Whisper produced {len(raw_segments)} segments, exceeding the {MAX_ASR_SEGMENTS} limit.")
         duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
         full_text = str((data.get("result") or {}).get("text") or "")
         fixed_segments = fix_asr_segment_rows(raw_segments, duration_ms)
