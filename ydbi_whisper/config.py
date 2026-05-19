@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import tempfile
 from pathlib import Path
 
@@ -13,9 +12,9 @@ MYSQL_CONFIG = {
     "database": "youbi",
 }
 
-WORK_ROOT = Path(os.environ.get("YDBI_WORK_DIR", Path(tempfile.gettempdir()) / "ydbi")).expanduser()
+WORK_ROOT = Path(tempfile.gettempdir()) / "ydbi"
 WORKFOLDER = WORK_ROOT
-WORK_DIR = Path(os.environ.get("YDBI_WHISPER_WORK_DIR", WORK_ROOT / "whisper")).expanduser()
+WORK_DIR = WORK_ROOT / "whisper"
 POLL_INTERVAL_SECONDS = 10
 
 COOKIE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/cookies").expanduser()
