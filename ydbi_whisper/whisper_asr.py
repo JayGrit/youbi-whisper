@@ -3,7 +3,19 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from .config import DEVICE, WHISPER_DOWNLOAD_ROOT, WHISPER_MODEL, device
+from .config import (
+    DEVICE,
+    WHISPER_DOWNLOAD_ROOT,
+    WHISPER_ENGINE,
+    WHISPER_MODEL,
+    WHISPERX_BATCH_SIZE,
+    WHISPERX_CHUNK_SIZE,
+    WHISPERX_COMPUTE_TYPE,
+    WHISPERX_VAD_METHOD,
+    WHISPERX_VAD_OFFSET,
+    WHISPERX_VAD_ONSET,
+    device,
+)
 
 # 全局模型缓存变量，用于避免每次识别时都重新加载 Whisper 模型
 _MODEL = None
@@ -18,17 +30,40 @@ def _word_timestamps_for(runtime_device: str) -> bool:
 
 def current_asr_config(language: str | None = None, *, load_model: bool = False) -> dict:
     model = _load_model() if load_model else None
-    runtime_device = str(getattr(model, "device", device())).lower() if model is not None else device()
+    configured_runtime_device = _runtime_device_for_engine()
+    runtime_device = str(getattr(model, "device", configured_runtime_device)).lower() if model is not None else configured_runtime_device
     return {
+        "engine": WHISPER_ENGINE,
         "model": WHISPER_MODEL,
         "configured_device": DEVICE,
         "runtime_device": runtime_device,
         "download_root": WHISPER_DOWNLOAD_ROOT or None,
         "transcribe_options": {
             "language": language,
-            "word_timestamps": _word_timestamps_for(runtime_device),
+            "word_timestamps": WHISPER_ENGINE == "openai" and _word_timestamps_for(runtime_device),
             "verbose": False,
         },
+        "whisperx": {
+            "batch_size": WHISPERX_BATCH_SIZE,
+            "compute_type": WHISPERX_COMPUTE_TYPE,
+            "vad_method": WHISPERX_VAD_METHOD,
+            "vad_options": _whisperx_vad_options(),
+        },
+    }
+
+
+def _runtime_device_for_engine() -> str:
+    runtime_device = device()
+    if WHISPER_ENGINE == "whisperx" and "mps" in runtime_device.lower():
+        return "cpu"
+    return runtime_device
+
+
+def _whisperx_vad_options() -> dict:
+    return {
+        "chunk_size": WHISPERX_CHUNK_SIZE,
+        "vad_onset": WHISPERX_VAD_ONSET,
+        "vad_offset": WHISPERX_VAD_OFFSET,
     }
 
 
@@ -38,6 +73,24 @@ def _load_model():
 
     # 如果模型还没有加载过，则进行首次加载
     if _MODEL is None:
+        runtime_device = _runtime_device_for_engine()
+        if WHISPER_ENGINE == "whisperx":
+            import whisperx
+
+            _MODEL = whisperx.load_model(
+                WHISPER_MODEL,
+                runtime_device,
+                compute_type=WHISPERX_COMPUTE_TYPE,
+                language=None,
+                vad_method=WHISPERX_VAD_METHOD,
+                vad_options=_whisperx_vad_options(),
+                download_root=WHISPER_DOWNLOAD_ROOT or None,
+            )
+            return _MODEL
+
+        if WHISPER_ENGINE != "openai":
+            raise ValueError(f"Unsupported whisper engine: {WHISPER_ENGINE}")
+
         # 延迟导入 whisper，避免模块加载时就引入较重的依赖
         import whisper
 
@@ -47,7 +100,7 @@ def _load_model():
         # download_root：模型下载或缓存目录；如果为空，则交给 whisper 使用默认目录
         _MODEL = whisper.load_model(
             WHISPER_MODEL,
-            device=device(),
+            device=runtime_device,
             download_root=WHISPER_DOWNLOAD_ROOT or None,
         )
 
@@ -103,6 +156,30 @@ def _convert_segments(segments: list) -> list:
     ]
 
 
+def _transcribe(model: object, vocals_file: Path, language: str, runtime_device: str, word_timestamps: bool) -> dict:
+    if WHISPER_ENGINE == "whisperx":
+        import whisperx
+
+        audio = whisperx.load_audio(str(vocals_file))
+        result = model.transcribe(
+            audio,
+            batch_size=WHISPERX_BATCH_SIZE,
+            language=language,
+            chunk_size=WHISPERX_CHUNK_SIZE,
+            verbose=False,
+        )
+        segments = result.get("segments", [])
+        result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
+        return result
+
+    return model.transcribe(
+        str(vocals_file),
+        language=language,
+        word_timestamps=word_timestamps,
+        verbose=False,
+    )
+
+
 def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     from pydub import AudioSegment
 
@@ -120,24 +197,27 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     # 获取模型实际运行设备
     # 如果 model 上没有 device 属性，则回退使用配置里的 device()
     # 转成小写字符串，方便后续判断
-    runtime_device = str(getattr(model, "device", device())).lower()
+    runtime_device = str(getattr(model, "device", _runtime_device_for_engine())).lower()
 
     # 判断是否启用词级时间戳
     # 在 MPS 设备上，Whisper 的 word_timestamps 可能触发 float64 DTW 相关问题
     # 因此如果运行在 mps 上，就关闭词级时间戳
-    word_timestamps = _word_timestamps_for(runtime_device)
+    word_timestamps = WHISPER_ENGINE == "openai" and _word_timestamps_for(runtime_device)
 
-    # 如果关闭了词级时间戳，打印 warning，方便排查为什么 words 为空
-    if not word_timestamps:
+    # 如果 OpenAI Whisper 在 MPS 上关闭了词级时间戳，打印 warning，方便排查为什么 words 为空
+    if WHISPER_ENGINE == "openai" and not word_timestamps:
         log.warning("Whisper is running on MPS; word timestamps are disabled to avoid MPS float64 DTW failure.")
     log.info(
-        "whisper runtime audio=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s",
+        "whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s",
         vocals_file,
+        WHISPER_ENGINE,
         WHISPER_MODEL,
         DEVICE,
         runtime_device,
         language,
         word_timestamps,
+        WHISPERX_VAD_METHOD if WHISPER_ENGINE == "whisperx" else None,
+        _whisperx_vad_options() if WHISPER_ENGINE == "whisperx" else None,
     )
 
     # 调用 Whisper 进行语音识别
@@ -145,12 +225,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     # language：指定识别语言
     # word_timestamps：是否返回词级时间戳
     # verbose=False：关闭详细输出
-    result = model.transcribe(
-        str(vocals_file),
-        language=language,
-        word_timestamps=word_timestamps,
-        verbose=False,
-    )
+    result = _transcribe(model, vocals_file, language, runtime_device, word_timestamps)
 
     # 将 Whisper 返回的 segments 转成项目内部统一的 utterances 格式
     utterances = _convert_segments(result.get("segments", []))

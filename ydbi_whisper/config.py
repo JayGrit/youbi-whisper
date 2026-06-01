@@ -32,6 +32,13 @@ MINIO_SECURE = False
 DEVICE = "auto"
 WHISPER_MODEL = "large-v3-turbo"
 WHISPER_DOWNLOAD_ROOT = ""
+WHISPER_ENGINE = os.environ.get("YDBI_WHISPER_ENGINE", "whisperx").strip().lower()
+WHISPERX_COMPUTE_TYPE = os.environ.get("YDBI_WHISPERX_COMPUTE_TYPE", "default").strip()
+WHISPERX_BATCH_SIZE = int(os.environ.get("YDBI_WHISPERX_BATCH_SIZE", "16"))
+WHISPERX_VAD_METHOD = os.environ.get("YDBI_WHISPERX_VAD_METHOD", "silero").strip().lower()
+WHISPERX_VAD_ONSET = float(os.environ.get("YDBI_WHISPERX_VAD_ONSET", "0.5"))
+WHISPERX_VAD_OFFSET = float(os.environ.get("YDBI_WHISPERX_VAD_OFFSET", "0.363"))
+WHISPERX_CHUNK_SIZE = int(os.environ.get("YDBI_WHISPERX_CHUNK_SIZE", "30"))
 TEST_API_HOST = os.environ.get("YDBI_WHISPER_TEST_API_HOST", "127.0.0.1")
 TEST_API_PORT = int(os.environ.get("YDBI_WHISPER_TEST_API_PORT", "8213"))
 
