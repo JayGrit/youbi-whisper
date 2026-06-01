@@ -130,6 +130,15 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     # 如果关闭了词级时间戳，打印 warning，方便排查为什么 words 为空
     if not word_timestamps:
         log.warning("Whisper is running on MPS; word timestamps are disabled to avoid MPS float64 DTW failure.")
+    log.info(
+        "whisper runtime audio=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s",
+        vocals_file,
+        WHISPER_MODEL,
+        DEVICE,
+        runtime_device,
+        language,
+        word_timestamps,
+    )
 
     # 调用 Whisper 进行语音识别
     # vocals_file：待识别的人声文件
