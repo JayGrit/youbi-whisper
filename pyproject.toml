@@ -13,6 +13,7 @@ dependencies = [
 [project.scripts]
 ydbi-whisper = "ydbi_whisper.main:main"
 ydbi-whisper-api = "ydbi_whisper.api:main"
+ydbi-whisper-test = "ydbi_whisper.local_test:main"
 
 [build-system]
 requires = ["setuptools>=69"]
