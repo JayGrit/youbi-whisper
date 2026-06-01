@@ -74,6 +74,14 @@ def _load_model():
     # 如果模型还没有加载过，则进行首次加载
     if _MODEL is None:
         runtime_device = _runtime_device_for_engine()
+        log.info(
+            "whisper loading model engine=%s model=%s configured_device=%s runtime_device=%s download_root=%s",
+            WHISPER_ENGINE,
+            WHISPER_MODEL,
+            DEVICE,
+            runtime_device,
+            WHISPER_DOWNLOAD_ROOT or None,
+        )
         if WHISPER_ENGINE == "whisperx":
             import whisperx
 
@@ -86,6 +94,7 @@ def _load_model():
                 vad_options=_whisperx_vad_options(),
                 download_root=WHISPER_DOWNLOAD_ROOT or None,
             )
+            log.info("whisper model loaded engine=%s model=%s runtime_device=%s", WHISPER_ENGINE, WHISPER_MODEL, runtime_device)
             return _MODEL
 
         if WHISPER_ENGINE != "openai":
@@ -103,6 +112,7 @@ def _load_model():
             device=runtime_device,
             download_root=WHISPER_DOWNLOAD_ROOT or None,
         )
+        log.info("whisper model loaded engine=%s model=%s runtime_device=%s", WHISPER_ENGINE, WHISPER_MODEL, runtime_device)
 
     # 返回已加载好的模型实例
     return _MODEL
@@ -160,7 +170,16 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
     if WHISPER_ENGINE == "whisperx":
         import whisperx
 
+        log.info("whisperx loading audio file=%s", vocals_file)
         audio = whisperx.load_audio(str(vocals_file))
+        log.info(
+            "whisperx transcribe start file=%s language=%s batch_size=%s chunk_size=%s runtime_device=%s",
+            vocals_file,
+            language,
+            WHISPERX_BATCH_SIZE,
+            WHISPERX_CHUNK_SIZE,
+            runtime_device,
+        )
         result = model.transcribe(
             audio,
             batch_size=WHISPERX_BATCH_SIZE,
@@ -170,8 +189,22 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
         )
         segments = result.get("segments", [])
         result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
+        log.info(
+            "whisperx transcribe done file=%s language=%s segments=%s text_chars=%s",
+            vocals_file,
+            result.get("language") or language,
+            len(segments),
+            len(result["text"]),
+        )
         return result
 
+    log.info(
+        "openai whisper transcribe start file=%s language=%s runtime_device=%s word_timestamps=%s",
+        vocals_file,
+        language,
+        runtime_device,
+        word_timestamps,
+    )
     return model.transcribe(
         str(vocals_file),
         language=language,
@@ -229,6 +262,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
 
     # 将 Whisper 返回的 segments 转成项目内部统一的 utterances 格式
     utterances = _convert_segments(result.get("segments", []))
+    log.info("whisper result converted audio=%s utterances=%s", vocals_file, len(utterances))
 
     # 如果 Whisper 没有返回任何语音片段，说明识别结果不可用
     if not utterances:
