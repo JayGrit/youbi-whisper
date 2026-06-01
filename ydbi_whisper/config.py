@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import tempfile
 from pathlib import Path
 
@@ -31,6 +32,8 @@ MINIO_SECURE = False
 DEVICE = "auto"
 WHISPER_MODEL = "large-v3-turbo"
 WHISPER_DOWNLOAD_ROOT = ""
+TEST_API_HOST = os.environ.get("YDBI_WHISPER_TEST_API_HOST", "127.0.0.1")
+TEST_API_PORT = int(os.environ.get("YDBI_WHISPER_TEST_API_PORT", "8213"))
 
 
 def device() -> str:
