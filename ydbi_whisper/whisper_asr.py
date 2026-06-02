@@ -6,6 +6,7 @@ from pathlib import Path
 from .config import (
     DEVICE,
     MODEL_ROOT,
+    TORCH_HOME,
     WHISPER_DOWNLOAD_ROOT,
     WHISPER_ENGINE,
     WHISPER_MODEL,
@@ -41,6 +42,7 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
         "configured_device": DEVICE,
         "runtime_device": runtime_device,
         "download_root": WHISPER_DOWNLOAD_ROOT or None,
+        "torch_home": str(TORCH_HOME),
         "transcribe_options": {
             "language": language,
             "word_timestamps": WHISPER_ENGINE == "openai" and _word_timestamps_for(runtime_device),
@@ -93,13 +95,14 @@ def _load_model():
     if _MODEL is None:
         runtime_device = _runtime_device_for_engine()
         log.info(
-            "whisper loading model engine=%s model=%s model_path=%s configured_device=%s runtime_device=%s download_root=%s",
+            "whisper loading model engine=%s model=%s model_path=%s configured_device=%s runtime_device=%s download_root=%s torch_home=%s",
             WHISPER_ENGINE,
             WHISPER_MODEL,
             _model_name_or_path(),
             DEVICE,
             runtime_device,
             WHISPER_DOWNLOAD_ROOT or None,
+            TORCH_HOME,
         )
         if WHISPER_ENGINE == "whisperx":
             import whisperx

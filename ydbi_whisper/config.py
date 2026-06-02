@@ -19,6 +19,8 @@ WORK_DIR = WORK_ROOT / "whisper"
 POLL_INTERVAL_SECONDS = 10
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_ROOT = Path(os.environ.get("YDBI_WHISPER_MODEL_ROOT", SERVICE_ROOT / "models")).expanduser()
+TORCH_HOME = Path(os.environ.get("TORCH_HOME", MODEL_ROOT / "torch")).expanduser()
+os.environ.setdefault("TORCH_HOME", str(TORCH_HOME))
 
 COOKIE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/cookies").expanduser()
 
