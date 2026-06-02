@@ -247,11 +247,14 @@ def _split_long_segment_on_minor_punctuation(segment: dict) -> list[dict]:
     split_segments = []
     current_words = []
 
-    def flush() -> None:
-        nonlocal current_words
-        grouped = _segment_from_words(current_words)
+    def append_group(group_words: list[dict]) -> None:
+        grouped = _segment_from_words(group_words)
         if grouped is not None:
             split_segments.append(grouped)
+
+    def flush_current() -> None:
+        nonlocal current_words
+        append_group(current_words)
         current_words = []
 
     for word in words:
@@ -260,10 +263,23 @@ def _split_long_segment_on_minor_punctuation(segment: dict) -> list[dict]:
             continue
         current_words.append(word)
         current_segment = _segment_from_words(current_words)
-        if current_segment is not None and _segment_too_long(current_segment) and MINOR_BREAK_RE.search(text):
-            flush()
+        if current_segment is None or not _segment_too_long(current_segment):
+            continue
 
-    flush()
+        split_at = None
+        for idx in range(len(current_words) - 2, -1, -1):
+            if MINOR_BREAK_RE.search(_word_text(current_words[idx])):
+                split_at = idx + 1
+                break
+
+        if split_at is None and len(current_words) > 1:
+            split_at = len(current_words) - 1
+
+        if split_at:
+            append_group(current_words[:split_at])
+            current_words = current_words[split_at:]
+
+    flush_current()
     return split_segments or [segment]
 
 
