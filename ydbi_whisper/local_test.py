@@ -55,7 +55,6 @@ def _db_counts(task_id: str) -> dict[str, int]:
         "whisper_aligned_word",
         "whisper_pysbd_segment",
         "whisper_long_split_segment",
-        "whisper_final_adjustment",
         "yd_asr_segment",
         "whisper_word_timestamp",
     )

@@ -635,49 +635,7 @@ def save_asr_result(task_id: str, language: str, payload: dict[str, Any], run_id
     segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
     save_asr_segments(task_id, segments, run_id)
     save_word_timestamps(task_id, segments, run_id)
-    if run_id is not None:
-        _save_whisper_final_adjustments(run_id, task_id, result.get("utterances") or [], segments)
     return segments
-
-
-def _save_whisper_final_adjustments(
-    run_id: int,
-    task_id: str,
-    source_segments: list[dict[str, Any]],
-    final_segments: list[dict[str, Any]],
-) -> None:
-    with connect() as conn:
-        cur = conn.cursor()
-        cur.execute("DELETE FROM whisper_final_adjustment WHERE run_id = %s", (run_id,))
-        for index, final_segment in enumerate(final_segments):
-            source_segment = source_segments[index] if index < len(source_segments) else final_segment
-            original_start = int(source_segment.get("start_time") or 0)
-            original_end = int(source_segment.get("end_time") or 0)
-            final_start = int(final_segment.get("start_time") or 0)
-            final_end = int(final_segment.get("end_time") or 0)
-            cur.execute(
-                """
-                INSERT INTO whisper_final_adjustment
-                  (run_id, task_id, long_split_segment_id, segment_index,
-                   original_start_time, original_end_time, final_start_time,
-                   final_end_time, start_delta_ms, end_delta_ms, start_pad_ms,
-                   end_pad_ms, min_gap_ms)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 100, 300, 50)
-                """,
-                (
-                    run_id,
-                    task_id,
-                    source_segment.get("_whisper_long_split_segment_id"),
-                    index,
-                    original_start,
-                    original_end,
-                    final_start,
-                    final_end,
-                    final_start - original_start,
-                    final_end - original_end,
-                ),
-            )
-        conn.commit()
 
 
 def connect():
