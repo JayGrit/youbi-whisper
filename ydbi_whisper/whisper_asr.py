@@ -220,7 +220,7 @@ def _convert_segments(segments: list) -> list:
             "_whisper_aligned_segment_index",
             "_whisper_aligned_segment_id",
             "_whisper_pysbd_index",
-            "_whisper_long_split_segment_id",
+            "_whisper_split_id",
         ):
             if key in seg:
                 item[key] = seg[key]
@@ -695,22 +695,22 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
             word_ids = {}
 
         align_language = str(aligned_result.get("language") or language or "en").lower()
-        pysbd_segments, long_split_segments = _regroup_aligned_segments(aligned_segments, align_language)
+        pysbd_segments, split_checked_segments = _regroup_aligned_segments(aligned_segments, align_language)
         if task_id is not None and run_id is not None:
             for segment in pysbd_segments:
                 aligned_index = segment.get("_whisper_aligned_segment_index")
                 if aligned_index is not None:
                     segment["_whisper_aligned_segment_id"] = aligned_segment_ids.get(int(aligned_index))
             pysbd_segment_ids = db.save_whisper_pysbd_segments(run_id, task_id, pysbd_segments, word_ids)
-            long_split_segment_ids = db.save_whisper_long_split_segments(
+            split_ids = db.save_whisper_splits(
                 run_id,
                 task_id,
-                long_split_segments,
+                split_checked_segments,
                 pysbd_segment_ids,
                 word_ids,
             )
-            for segment_index, segment in enumerate(long_split_segments):
-                segment["_whisper_long_split_segment_id"] = long_split_segment_ids.get(segment_index)
+            for segment_index, segment in enumerate(split_checked_segments):
+                segment["_whisper_split_id"] = split_ids.get(segment_index)
                 for word in segment.get("words") or []:
                     global_index = word.get("_whisper_word_global_index")
                     if global_index in word_ids:
@@ -718,15 +718,15 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
 
         result = {
             **aligned_result,
-            "segments": long_split_segments,
-            "text": " ".join(str(seg.get("text") or "").strip() for seg in long_split_segments).strip(),
+            "segments": split_checked_segments,
+            "text": " ".join(str(seg.get("text") or "").strip() for seg in split_checked_segments).strip(),
         }
     elif task_id is not None and run_id is not None:
         aligned_segment_ids = db.save_whisper_aligned_segments(run_id, task_id, raw_result.get("segments", []), raw_segment_ids)
         _assign_word_indexes(raw_result.get("segments", []))
         word_ids = db.save_whisper_aligned_words(run_id, task_id, raw_result.get("segments", []), aligned_segment_ids)
         pysbd_segment_ids = db.save_whisper_pysbd_segments(run_id, task_id, raw_result.get("segments", []), word_ids)
-        long_split_segment_ids = db.save_whisper_long_split_segments(
+        split_ids = db.save_whisper_splits(
             run_id,
             task_id,
             raw_result.get("segments", []),
@@ -734,7 +734,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
             word_ids,
         )
         for segment_index, segment in enumerate(raw_result.get("segments", [])):
-            segment["_whisper_long_split_segment_id"] = long_split_segment_ids.get(segment_index)
+            segment["_whisper_split_id"] = split_ids.get(segment_index)
 
     # 将 Whisper 返回的 segments 转成项目内部统一的 utterances 格式
     utterances = _convert_segments(result.get("segments", []))

@@ -195,6 +195,8 @@ def ensure_asr_schema() -> None:
             "yd_asr_segment",
             {
                 "speaker": "VARCHAR(64)",
+                "whisper_run_id": "BIGINT NULL",
+                "whisper_split_id": "BIGINT NULL",
             },
         )
         _migrate_asr_schema(cur)
@@ -487,7 +489,7 @@ def save_whisper_pysbd_segments(
     return ids
 
 
-def save_whisper_long_split_segments(
+def save_whisper_splits(
     run_id: int,
     task_id: str,
     segments: list[dict[str, Any]],
@@ -497,20 +499,23 @@ def save_whisper_long_split_segments(
     ids: dict[int, int] = {}
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM whisper_long_split_segment WHERE run_id = %s", (run_id,))
+        cur.execute("DELETE FROM whisper_split WHERE run_id = %s", (run_id,))
         for index, segment in enumerate(segments):
+            if not segment.get("_whisper_split_applied"):
+                continue
             start_time = _segment_ms(segment, "start")
             end_time = _segment_ms(segment, "end")
             first_word_id, last_word_id = _segment_word_ids(segment, word_ids)
-            source_index = int(segment.get("_whisper_pysbd_index") or index)
+            source_index_value = segment.get("_whisper_pysbd_index")
+            source_index = int(source_index_value) if source_index_value is not None else index
             cur.execute(
                 """
-                INSERT INTO whisper_long_split_segment
+                INSERT INTO whisper_split
                   (run_id, task_id, split_index, pysbd_segment_id, text, start_time,
                    end_time, duration_ms, first_word_id, last_word_id, word_count,
-                   split_applied, split_reason, split_at_word_index, split_punctuation,
-                   max_chars, max_duration_ms)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   split_reason, split_at_word_index, split_punctuation, max_chars,
+                   max_duration_ms)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
                 (
                     run_id,
@@ -524,7 +529,6 @@ def save_whisper_long_split_segments(
                     first_word_id,
                     last_word_id,
                     len(segment.get("words") or []),
-                    1 if segment.get("_whisper_split_applied") else 0,
                     segment.get("_whisper_split_reason") or "none",
                     segment.get("_whisper_split_at_word_index"),
                     segment.get("_whisper_split_punctuation"),
@@ -604,7 +608,7 @@ def save_asr_segments(
                 """
                 INSERT INTO yd_asr_segment
                   (task_id, item_index, text, start_time, end_time, speaker,
-                   whisper_run_id, whisper_long_split_segment_id)
+                   whisper_run_id, whisper_split_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                   text = VALUES(text),
@@ -612,7 +616,7 @@ def save_asr_segments(
                   end_time = VALUES(end_time),
                   speaker = VALUES(speaker),
                   whisper_run_id = VALUES(whisper_run_id),
-                  whisper_long_split_segment_id = VALUES(whisper_long_split_segment_id)
+                  whisper_split_id = VALUES(whisper_split_id)
                 """,
                 (
                     task_id,
@@ -622,7 +626,7 @@ def save_asr_segments(
                     int(item.get("end_time") or 0),
                     str(item.get("speaker") or "") or None,
                     run_id,
-                    item.get("_whisper_long_split_segment_id"),
+                    item.get("_whisper_split_id"),
                 ),
             )
         conn.commit()
