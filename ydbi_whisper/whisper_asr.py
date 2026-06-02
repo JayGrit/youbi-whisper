@@ -34,6 +34,7 @@ _MODEL = None
 # 当前模块的 logger，用于输出运行时日志
 log = logging.getLogger(__name__)
 SENTENCE_END_RE = re.compile(r"[.!?。！？]+[\"')\]}]*$")
+MINOR_BREAK_RE = re.compile(r"[,;:，；：]+[\"')\]}]*$")
 
 
 def _word_timestamps_for(runtime_device: str) -> bool:
@@ -216,29 +217,68 @@ def _word_text(word: dict) -> str:
     return str(word.get("word") or word.get("text") or "").strip()
 
 
+def _segment_from_words(words: list[dict]) -> dict | None:
+    timed_words = [word for word in words if "start" in word and "end" in word]
+    text = " ".join(_word_text(word) for word in words if _word_text(word)).strip()
+    if not text or not timed_words:
+        return None
+    return {
+        "text": text,
+        "start": float(timed_words[0]["start"]),
+        "end": float(timed_words[-1]["end"]),
+        "words": words,
+    }
+
+
+def _segment_too_long(segment: dict) -> bool:
+    text = str(segment.get("text") or "")
+    duration_ms = int(round((float(segment.get("end") or 0.0) - float(segment.get("start") or 0.0)) * 1000))
+    return len(text) >= WHISPERX_REGROUP_MAX_CHARS or duration_ms >= WHISPERX_REGROUP_MAX_DURATION_MS
+
+
+def _split_long_segment_on_minor_punctuation(segment: dict) -> list[dict]:
+    if not _segment_too_long(segment):
+        return [segment]
+
+    words = segment.get("words") or []
+    if not words:
+        return [segment]
+
+    split_segments = []
+    current_words = []
+
+    def flush() -> None:
+        nonlocal current_words
+        grouped = _segment_from_words(current_words)
+        if grouped is not None:
+            split_segments.append(grouped)
+        current_words = []
+
+    for word in words:
+        text = _word_text(word)
+        if not text:
+            continue
+        current_words.append(word)
+        current_segment = _segment_from_words(current_words)
+        if current_segment is not None and _segment_too_long(current_segment) and MINOR_BREAK_RE.search(text):
+            flush()
+
+    flush()
+    return split_segments or [segment]
+
+
 def _regroup_aligned_segments(segments: list[dict]) -> list[dict]:
     regrouped = []
     current_words = []
-    current_texts = []
 
     def flush() -> None:
-        nonlocal current_words, current_texts
-        text = " ".join(current_texts).strip()
-        words = [word for word in current_words if "start" in word and "end" in word]
-        if not text or not words:
+        nonlocal current_words
+        segment = _segment_from_words(current_words)
+        if segment is None:
             current_words = []
-            current_texts = []
             return
-        regrouped.append(
-            {
-                "text": text,
-                "start": float(words[0]["start"]),
-                "end": float(words[-1]["end"]),
-                "words": current_words,
-            }
-        )
+        regrouped.extend(_split_long_segment_on_minor_punctuation(segment))
         current_words = []
-        current_texts = []
 
     for segment in segments:
         words = segment.get("words") or []
@@ -256,15 +296,7 @@ def _regroup_aligned_segments(segments: list[dict]) -> list[dict]:
                 continue
 
             current_words.append(word)
-            current_texts.append(text)
-            current_text = " ".join(current_texts)
-            duration_ms = int(round((float(current_words[-1]["end"]) - float(current_words[0]["start"])) * 1000))
-            should_flush = (
-                bool(SENTENCE_END_RE.search(text))
-                or len(current_text) >= WHISPERX_REGROUP_MAX_CHARS
-                or duration_ms >= WHISPERX_REGROUP_MAX_DURATION_MS
-            )
-            if should_flush:
+            if SENTENCE_END_RE.search(text):
                 flush()
 
     flush()
