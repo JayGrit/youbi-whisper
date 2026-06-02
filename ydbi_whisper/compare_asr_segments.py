@@ -6,6 +6,25 @@ import json
 from pathlib import Path
 from typing import Any
 
+from .config import MYSQL_CONFIG
+
+
+def _load_db_segments(task_id: str) -> list[str]:
+    import mysql.connector
+
+    with mysql.connector.connect(**MYSQL_CONFIG) as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT text
+            FROM yd_asr_segment
+            WHERE task_id = %s
+            ORDER BY item_index
+            """,
+            (task_id,),
+        )
+        return [str(row[0] or "").strip() for row in cur.fetchall()]
+
 
 def _output_utterances(payload: dict[str, Any]) -> list[dict[str, Any]]:
     result = payload.get("result") if isinstance(payload.get("result"), dict) else {}
@@ -19,24 +38,32 @@ def _load_output_segments(output_json: Path) -> list[str]:
 
 
 def write_compare_csv(task_id: str, output_json: Path, csv_path: Path) -> dict[str, int | str]:
+    db_segments = _load_db_segments(task_id)
     output_segments = _load_output_segments(output_json)
 
     csv_path.parent.mkdir(parents=True, exist_ok=True)
+    total = max(len(db_segments), len(output_segments))
     with csv_path.open("w", encoding="utf-8-sig", newline="") as f:
         writer = csv.writer(f)
-        writer.writerow(["任务", "output分句"])
-        for segment in output_segments:
-            writer.writerow([task_id, segment])
+        writer.writerow(["数据库分句", "output分句"])
+        for index in range(total):
+            writer.writerow(
+                [
+                    db_segments[index] if index < len(db_segments) else "",
+                    output_segments[index] if index < len(output_segments) else "",
+                ]
+            )
 
     return {
         "task_id": task_id,
+        "db_segments": len(db_segments),
         "output_segments": len(output_segments),
         "csv_path": str(csv_path.resolve()),
     }
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="Export local ASR output segments to CSV.")
+    parser = argparse.ArgumentParser(description="Compare ASR segments from MySQL and a local ASR output JSON.")
     parser.add_argument("task_id", help="Pipeline task id, for example yaEagn27eGE.")
     parser.add_argument("output_json", type=Path, help="Local ASR payload JSON path.")
     parser.add_argument(
