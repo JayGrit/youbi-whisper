@@ -17,6 +17,8 @@ WORK_ROOT = Path(tempfile.gettempdir()) / "ydbi"
 WORKFOLDER = WORK_ROOT
 WORK_DIR = WORK_ROOT / "whisper"
 POLL_INTERVAL_SECONDS = 10
+SERVICE_ROOT = Path(__file__).resolve().parents[1]
+MODEL_ROOT = Path(os.environ.get("YDBI_WHISPER_MODEL_ROOT", SERVICE_ROOT / "models")).expanduser()
 
 COOKIE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/cookies").expanduser()
 
@@ -31,8 +33,9 @@ MINIO_SECURE = False
 
 DEVICE = "auto"
 WHISPER_MODEL = "large-v3-turbo"
-WHISPER_DOWNLOAD_ROOT = ""
+WHISPER_DOWNLOAD_ROOT = os.environ.get("YDBI_WHISPER_DOWNLOAD_ROOT", str(MODEL_ROOT / "openai-whisper"))
 WHISPER_ENGINE = os.environ.get("YDBI_WHISPER_ENGINE", "whisperx").strip().lower()
+WHISPERX_MODEL_PATH = os.environ.get("YDBI_WHISPERX_MODEL_PATH", "").strip()
 WHISPERX_COMPUTE_TYPE = os.environ.get("YDBI_WHISPERX_COMPUTE_TYPE", "default").strip()
 WHISPERX_BATCH_SIZE = int(os.environ.get("YDBI_WHISPERX_BATCH_SIZE", "16"))
 WHISPERX_VAD_METHOD = os.environ.get("YDBI_WHISPERX_VAD_METHOD", "silero").strip().lower()

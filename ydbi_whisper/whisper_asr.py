@@ -5,9 +5,11 @@ from pathlib import Path
 
 from .config import (
     DEVICE,
+    MODEL_ROOT,
     WHISPER_DOWNLOAD_ROOT,
     WHISPER_ENGINE,
     WHISPER_MODEL,
+    WHISPERX_MODEL_PATH,
     WHISPERX_BATCH_SIZE,
     WHISPERX_CHUNK_SIZE,
     WHISPERX_COMPUTE_TYPE,
@@ -35,6 +37,7 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
     return {
         "engine": WHISPER_ENGINE,
         "model": WHISPER_MODEL,
+        "model_path": _model_name_or_path(),
         "configured_device": DEVICE,
         "runtime_device": runtime_device,
         "download_root": WHISPER_DOWNLOAD_ROOT or None,
@@ -67,6 +70,21 @@ def _whisperx_vad_options() -> dict:
     }
 
 
+def _model_name_or_path() -> str:
+    if WHISPER_ENGINE != "whisperx":
+        return WHISPER_MODEL
+
+    configured_path = Path(WHISPERX_MODEL_PATH).expanduser() if WHISPERX_MODEL_PATH else None
+    if configured_path is not None:
+        return str(configured_path)
+
+    local_model = MODEL_ROOT / "faster-whisper-large-v3-turbo"
+    if local_model.exists():
+        return str(local_model)
+
+    return WHISPER_MODEL
+
+
 def _load_model():
     # 声明使用全局变量 _MODEL
     global _MODEL
@@ -75,9 +93,10 @@ def _load_model():
     if _MODEL is None:
         runtime_device = _runtime_device_for_engine()
         log.info(
-            "whisper loading model engine=%s model=%s configured_device=%s runtime_device=%s download_root=%s",
+            "whisper loading model engine=%s model=%s model_path=%s configured_device=%s runtime_device=%s download_root=%s",
             WHISPER_ENGINE,
             WHISPER_MODEL,
+            _model_name_or_path(),
             DEVICE,
             runtime_device,
             WHISPER_DOWNLOAD_ROOT or None,
@@ -86,7 +105,7 @@ def _load_model():
             import whisperx
 
             _MODEL = whisperx.load_model(
-                WHISPER_MODEL,
+                _model_name_or_path(),
                 runtime_device,
                 compute_type=WHISPERX_COMPUTE_TYPE,
                 language=None,
@@ -94,7 +113,13 @@ def _load_model():
                 vad_options=_whisperx_vad_options(),
                 download_root=WHISPER_DOWNLOAD_ROOT or None,
             )
-            log.info("whisper model loaded engine=%s model=%s runtime_device=%s", WHISPER_ENGINE, WHISPER_MODEL, runtime_device)
+            log.info(
+                "whisper model loaded engine=%s model=%s model_path=%s runtime_device=%s",
+                WHISPER_ENGINE,
+                WHISPER_MODEL,
+                _model_name_or_path(),
+                runtime_device,
+            )
             return _MODEL
 
         if WHISPER_ENGINE != "openai":
