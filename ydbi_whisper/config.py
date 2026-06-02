@@ -5,6 +5,13 @@ import tempfile
 from pathlib import Path
 
 
+def _env_bool(name: str, default: bool) -> bool:
+    value = os.environ.get(name)
+    if value is None:
+        return default
+    return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
 MYSQL_CONFIG = {
     "host": "120.53.92.66",
     "port": 3306,
@@ -21,6 +28,8 @@ SERVICE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_ROOT = Path(os.environ.get("YDBI_WHISPER_MODEL_ROOT", SERVICE_ROOT / "models")).expanduser()
 TORCH_HOME = Path(os.environ.get("TORCH_HOME", MODEL_ROOT / "torch")).expanduser()
 os.environ.setdefault("TORCH_HOME", str(TORCH_HOME))
+NLTK_DATA = Path(os.environ.get("NLTK_DATA", MODEL_ROOT / "nltk")).expanduser()
+os.environ.setdefault("NLTK_DATA", str(NLTK_DATA))
 
 COOKIE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/cookies").expanduser()
 
@@ -44,6 +53,12 @@ WHISPERX_VAD_METHOD = os.environ.get("YDBI_WHISPERX_VAD_METHOD", "silero").strip
 WHISPERX_VAD_ONSET = float(os.environ.get("YDBI_WHISPERX_VAD_ONSET", "0.5"))
 WHISPERX_VAD_OFFSET = float(os.environ.get("YDBI_WHISPERX_VAD_OFFSET", "0.363"))
 WHISPERX_CHUNK_SIZE = int(os.environ.get("YDBI_WHISPERX_CHUNK_SIZE", "30"))
+WHISPERX_ALIGN = _env_bool("YDBI_WHISPERX_ALIGN", True)
+WHISPERX_ALIGN_MODEL = os.environ.get("YDBI_WHISPERX_ALIGN_MODEL", "").strip()
+WHISPERX_ALIGN_MODEL_DIR = os.environ.get("YDBI_WHISPERX_ALIGN_MODEL_DIR", str(MODEL_ROOT / "align"))
+WHISPERX_ALIGN_INTERPOLATE_METHOD = os.environ.get("YDBI_WHISPERX_ALIGN_INTERPOLATE_METHOD", "nearest").strip()
+WHISPERX_REGROUP_MAX_CHARS = int(os.environ.get("YDBI_WHISPERX_REGROUP_MAX_CHARS", "120"))
+WHISPERX_REGROUP_MAX_DURATION_MS = int(os.environ.get("YDBI_WHISPERX_REGROUP_MAX_DURATION_MS", "8000"))
 TEST_API_HOST = os.environ.get("YDBI_WHISPER_TEST_API_HOST", "127.0.0.1")
 TEST_API_PORT = int(os.environ.get("YDBI_WHISPER_TEST_API_PORT", "8213"))
 

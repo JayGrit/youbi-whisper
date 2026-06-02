@@ -1,19 +1,27 @@
 from __future__ import annotations
 
 import logging
+import re
 from pathlib import Path
 
 from .config import (
     DEVICE,
     MODEL_ROOT,
+    NLTK_DATA,
     TORCH_HOME,
     WHISPER_DOWNLOAD_ROOT,
     WHISPER_ENGINE,
     WHISPER_MODEL,
+    WHISPERX_ALIGN,
+    WHISPERX_ALIGN_INTERPOLATE_METHOD,
+    WHISPERX_ALIGN_MODEL,
+    WHISPERX_ALIGN_MODEL_DIR,
     WHISPERX_MODEL_PATH,
     WHISPERX_BATCH_SIZE,
     WHISPERX_CHUNK_SIZE,
     WHISPERX_COMPUTE_TYPE,
+    WHISPERX_REGROUP_MAX_CHARS,
+    WHISPERX_REGROUP_MAX_DURATION_MS,
     WHISPERX_VAD_METHOD,
     WHISPERX_VAD_OFFSET,
     WHISPERX_VAD_ONSET,
@@ -25,6 +33,7 @@ _MODEL = None
 
 # 当前模块的 logger，用于输出运行时日志
 log = logging.getLogger(__name__)
+SENTENCE_END_RE = re.compile(r"[.!?。！？]+[\"')\]}]*$")
 
 
 def _word_timestamps_for(runtime_device: str) -> bool:
@@ -43,6 +52,7 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
         "runtime_device": runtime_device,
         "download_root": WHISPER_DOWNLOAD_ROOT or None,
         "torch_home": str(TORCH_HOME),
+        "nltk_data": str(NLTK_DATA),
         "transcribe_options": {
             "language": language,
             "word_timestamps": WHISPER_ENGINE == "openai" and _word_timestamps_for(runtime_device),
@@ -53,6 +63,14 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
             "compute_type": WHISPERX_COMPUTE_TYPE,
             "vad_method": WHISPERX_VAD_METHOD,
             "vad_options": _whisperx_vad_options(),
+            "align": WHISPERX_ALIGN,
+            "align_model": WHISPERX_ALIGN_MODEL or None,
+            "align_model_dir": WHISPERX_ALIGN_MODEL_DIR,
+            "align_interpolate_method": WHISPERX_ALIGN_INTERPOLATE_METHOD,
+            "regroup": {
+                "max_chars": WHISPERX_REGROUP_MAX_CHARS,
+                "max_duration_ms": WHISPERX_REGROUP_MAX_DURATION_MS,
+            },
         },
     }
 
@@ -194,6 +212,115 @@ def _convert_segments(segments: list) -> list:
     ]
 
 
+def _word_text(word: dict) -> str:
+    return str(word.get("word") or word.get("text") or "").strip()
+
+
+def _regroup_aligned_segments(segments: list[dict]) -> list[dict]:
+    regrouped = []
+    current_words = []
+    current_texts = []
+
+    def flush() -> None:
+        nonlocal current_words, current_texts
+        text = " ".join(current_texts).strip()
+        words = [word for word in current_words if "start" in word and "end" in word]
+        if not text or not words:
+            current_words = []
+            current_texts = []
+            return
+        regrouped.append(
+            {
+                "text": text,
+                "start": float(words[0]["start"]),
+                "end": float(words[-1]["end"]),
+                "words": current_words,
+            }
+        )
+        current_words = []
+        current_texts = []
+
+    for segment in segments:
+        words = segment.get("words") or []
+        if not words:
+            flush()
+            regrouped.append(segment)
+            continue
+
+        for word in words:
+            text = _word_text(word)
+            if not text:
+                continue
+            if "start" not in word or "end" not in word:
+                flush()
+                continue
+
+            current_words.append(word)
+            current_texts.append(text)
+            current_text = " ".join(current_texts)
+            duration_ms = int(round((float(current_words[-1]["end"]) - float(current_words[0]["start"])) * 1000))
+            should_flush = (
+                bool(SENTENCE_END_RE.search(text))
+                or len(current_text) >= WHISPERX_REGROUP_MAX_CHARS
+                or duration_ms >= WHISPERX_REGROUP_MAX_DURATION_MS
+            )
+            if should_flush:
+                flush()
+
+    flush()
+    return regrouped or segments
+
+
+def _align_whisperx_result(whisperx, result: dict, audio: object, language: str, runtime_device: str) -> dict:
+    if not WHISPERX_ALIGN or not result.get("segments"):
+        return result
+
+    align_language = str(result.get("language") or language or "en").lower()
+    log.info(
+        "whisperx align model loading language=%s model=%s model_dir=%s runtime_device=%s",
+        align_language,
+        WHISPERX_ALIGN_MODEL or None,
+        WHISPERX_ALIGN_MODEL_DIR,
+        runtime_device,
+    )
+    Path(WHISPERX_ALIGN_MODEL_DIR).expanduser().mkdir(parents=True, exist_ok=True)
+    align_model, align_metadata = whisperx.load_align_model(
+        align_language,
+        runtime_device,
+        model_name=WHISPERX_ALIGN_MODEL or None,
+        model_dir=WHISPERX_ALIGN_MODEL_DIR,
+    )
+    log.info(
+        "whisperx align start language=%s segments=%s interpolate_method=%s",
+        align_language,
+        len(result.get("segments") or []),
+        WHISPERX_ALIGN_INTERPOLATE_METHOD,
+    )
+    aligned = whisperx.align(
+        result["segments"],
+        align_model,
+        align_metadata,
+        audio,
+        runtime_device,
+        interpolate_method=WHISPERX_ALIGN_INTERPOLATE_METHOD,
+        return_char_alignments=False,
+        print_progress=False,
+    )
+    aligned_segments = aligned.get("segments") or []
+    regrouped_segments = _regroup_aligned_segments(aligned_segments)
+    aligned["segments"] = regrouped_segments
+    aligned["text"] = " ".join(str(seg.get("text") or "").strip() for seg in regrouped_segments).strip()
+    aligned["language"] = align_language
+    log.info(
+        "whisperx align done language=%s aligned_segments=%s regrouped_segments=%s word_segments=%s",
+        align_language,
+        len(aligned_segments),
+        len(regrouped_segments),
+        len(aligned.get("word_segments") or []),
+    )
+    return aligned
+
+
 def _transcribe(model: object, vocals_file: Path, language: str, runtime_device: str, word_timestamps: bool) -> dict:
     if WHISPER_ENGINE == "whisperx":
         import whisperx
@@ -224,6 +351,7 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
             len(segments),
             len(result["text"]),
         )
+        result = _align_whisperx_result(whisperx, result, audio, language, runtime_device)
         return result
 
     log.info(
@@ -269,7 +397,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     if WHISPER_ENGINE == "openai" and not word_timestamps:
         log.warning("Whisper is running on MPS; word timestamps are disabled to avoid MPS float64 DTW failure.")
     log.info(
-        "whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s",
+        "whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s align=%s",
         vocals_file,
         WHISPER_ENGINE,
         WHISPER_MODEL,
@@ -279,6 +407,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
         word_timestamps,
         WHISPERX_VAD_METHOD if WHISPER_ENGINE == "whisperx" else None,
         _whisperx_vad_options() if WHISPER_ENGINE == "whisperx" else None,
+        WHISPERX_ALIGN if WHISPER_ENGINE == "whisperx" else None,
     )
 
     # 调用 Whisper 进行语音识别
