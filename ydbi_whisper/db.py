@@ -53,6 +53,18 @@ def _table_columns(cur, table: str) -> set[str]:
     return {_row_value(row) for row in cur.fetchall()}
 
 
+def _table_exists(cur, table: str) -> bool:
+    cur.execute(
+        """
+        SELECT COUNT(*)
+        FROM information_schema.tables
+        WHERE table_schema = DATABASE() AND table_name = %s
+        """,
+        (table,),
+    )
+    return int(_row_value(cur.fetchone()) or 0) > 0
+
+
 def _table_indexes(cur, table: str) -> set[str]:
     cur.execute(
         """
@@ -73,6 +85,11 @@ def _drop_index_if_exists(cur, table: str, index_name: str) -> None:
 def _drop_column_if_exists(cur, table: str, column_name: str) -> None:
     if column_name in _table_columns(cur, table):
         cur.execute(f"ALTER TABLE {table} DROP COLUMN {column_name}")
+
+
+def _drop_table_if_exists(cur, table: str) -> None:
+    if _table_exists(cur, table):
+        cur.execute(f"DROP TABLE {table}")
 
 
 def _migrate_asr_schema(cur) -> None:
@@ -121,18 +138,7 @@ def _migrate_asr_schema(cur) -> None:
 def ensure_asr_schema() -> None:
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS yd_asr_result (
-              task_id VARCHAR(64) PRIMARY KEY,
-              language VARCHAR(16),
-              duration_ms INT NOT NULL DEFAULT 0,
-              full_text MEDIUMTEXT,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )
-            """
-        )
+        _drop_table_if_exists(cur, "yd_asr_result")
         cur.execute(
             """
             CREATE TABLE IF NOT EXISTS yd_asr_segment (
@@ -229,26 +235,10 @@ def save_word_timestamps(task_id: str, segments: list[dict[str, Any]]) -> int:
 def save_asr_segments(
     task_id: str,
     segments: list[dict[str, Any]],
-    *,
-    language: str | None = None,
-    duration_ms: int | None = None,
-    full_text: str | None = None,
 ) -> None:
     ensure_asr_schema()
     with connect() as conn:
         cur = conn.cursor()
-        if language is not None or duration_ms is not None or full_text is not None:
-            cur.execute(
-                """
-                INSERT INTO yd_asr_result (task_id, language, duration_ms, full_text)
-                VALUES (%s, %s, %s, %s)
-                ON DUPLICATE KEY UPDATE
-                  language = COALESCE(VALUES(language), language),
-                  duration_ms = IF(VALUES(duration_ms) = 0, duration_ms, VALUES(duration_ms)),
-                  full_text = COALESCE(VALUES(full_text), full_text)
-                """,
-                (task_id, language, int(duration_ms or 0), full_text),
-            )
         cur.execute("DELETE FROM yd_asr_segment WHERE task_id = %s", (task_id,))
         for index, item in enumerate(segments):
             cur.execute(
@@ -278,15 +268,8 @@ def save_asr_result(task_id: str, language: str, payload: dict[str, Any]) -> lis
     audio_info = payload.get("audio_info") or {}
     result = payload.get("result") or {}
     duration_ms = int(audio_info.get("duration") or 0)
-    full_text = str(result.get("text") or "")
     segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
-    save_asr_segments(
-        task_id,
-        segments,
-        language=language,
-        duration_ms=duration_ms,
-        full_text=full_text,
-    )
+    save_asr_segments(task_id, segments)
     save_word_timestamps(task_id, segments)
     return segments
 
