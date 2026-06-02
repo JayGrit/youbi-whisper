@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import re
 import time
 from typing import Any
 
@@ -23,6 +24,21 @@ log = logging.getLogger(__name__)
 
 MAX_ATTEMPTS = 3
 STRICT_ATTEMPT = 2
+SENTENCE_BREAK_RE = re.compile(r"[.!?。！？]+[\"')\]}]*$")
+MINOR_BREAK_RE = re.compile(r"[,;:，；：]+[\"')\]}]*$")
+SOFT_BREAK_WORDS = {
+    "and",
+    "but",
+    "or",
+    "because",
+    "while",
+    "although",
+    "however",
+    "meanwhile",
+    "which",
+    "who",
+    "that",
+}
 
 
 def _word_text(word: dict[str, Any]) -> str:
@@ -48,6 +64,35 @@ def _segment_from_words(words: list[dict[str, Any]]) -> dict[str, Any] | None:
         "end": float(timed_words[-1]["end"]),
         "words": words,
     }
+
+
+def _fallback_groups_for_words(words: list[dict[str, Any]]) -> list[list[dict[str, Any]]]:
+    groups: list[list[dict[str, Any]]] = []
+    current: list[dict[str, Any]] = []
+
+    def flush() -> None:
+        nonlocal current
+        if current:
+            groups.append(current)
+            current = []
+
+    for word in words:
+        text = _word_text(word)
+        if not text:
+            continue
+        current.append(word)
+        normalized = text.strip("\"'()[]{}").lower()
+        if SENTENCE_BREAK_RE.search(text) and len(current) >= 4:
+            flush()
+        elif MINOR_BREAK_RE.search(text) and len(current) >= WHISPER_SEMANTIC_SEGMENT_TARGET_WORDS:
+            flush()
+        elif normalized in SOFT_BREAK_WORDS and len(current) >= WHISPER_SEMANTIC_SEGMENT_TARGET_WORDS:
+            flush()
+        elif len(current) >= WHISPER_SEMANTIC_SEGMENT_MAX_WORDS:
+            flush()
+
+    flush()
+    return groups
 
 
 def _api_settings() -> dict[str, str] | None:
@@ -352,7 +397,16 @@ def segment_words_with_llm(
             diagnostics,
         )
         if groups is None:
-            return None
+            groups = _fallback_groups_for_words(usable_words[start:end])
+            diagnostics.setdefault("chunk_rule_fallbacks", []).append(
+                {
+                    "chunk_index": chunk_index,
+                    "method": "semantic_caption_rule",
+                    "word_count": end - start,
+                    "segments": len(groups),
+                }
+            )
+            _append_summary(diagnostics, "rule_fallback_chunks")
         all_groups.extend(groups)
         chunk_index += 1
 

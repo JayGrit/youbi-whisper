@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,7 @@ OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 STAGE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
 _heartbeat_schema_ready = False
+_whisper_debug_schema_ready = False
 
 
 def _row_value(row: Any, index: int = 0) -> Any:
@@ -272,6 +274,245 @@ def save_asr_result(task_id: str, language: str, payload: dict[str, Any]) -> lis
     save_asr_segments(task_id, segments)
     save_word_timestamps(task_id, segments)
     return segments
+
+
+def ensure_whisper_debug_schema() -> None:
+    global _whisper_debug_schema_ready
+    if _whisper_debug_schema_ready:
+        return
+
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whisper_local_test_task (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              task_id VARCHAR(64) NOT NULL,
+              audio_path TEXT NOT NULL,
+              audio_size BIGINT NOT NULL DEFAULT 0,
+              audio_mtime_ns BIGINT NOT NULL DEFAULT 0,
+              audio_sha256 VARCHAR(64) NOT NULL DEFAULT '',
+              language VARCHAR(32) NOT NULL DEFAULT '',
+              status VARCHAR(32) NOT NULL DEFAULT 'created',
+              payload_path TEXT,
+              meta_path TEXT,
+              semantic_debug_path TEXT,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_whisper_local_test_task (task_id),
+              KEY idx_whisper_local_test_audio (audio_sha256, language)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whisper_step_result (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              task_id VARCHAR(64) NOT NULL,
+              step_name VARCHAR(64) NOT NULL,
+              status VARCHAR(32) NOT NULL,
+              language VARCHAR(32) NOT NULL DEFAULT '',
+              model VARCHAR(128) NOT NULL DEFAULT '',
+              payload_json LONGTEXT,
+              diagnostics_json LONGTEXT,
+              error_message TEXT,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              completed_at DATETIME NULL,
+              UNIQUE KEY uk_whisper_step_result (task_id, step_name),
+              KEY idx_whisper_step_result_status (task_id, status, step_name)
+            )
+            """
+        )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whisper_semantic_chunk (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              task_id VARCHAR(64) NOT NULL,
+              chunk_index INT NOT NULL,
+              status VARCHAR(32) NOT NULL,
+              word_start INT NOT NULL DEFAULT 0,
+              word_end INT NOT NULL DEFAULT 0,
+              accepted_attempt INT,
+              left_context MEDIUMTEXT,
+              editable_zone MEDIUMTEXT,
+              right_context MEDIUMTEXT,
+              attempts_json LONGTEXT,
+              validation_json LONGTEXT,
+              result_json LONGTEXT,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_whisper_semantic_chunk (task_id, chunk_index),
+              KEY idx_whisper_semantic_chunk_status (task_id, status)
+            )
+            """
+        )
+        conn.commit()
+    _whisper_debug_schema_ready = True
+
+
+def upsert_whisper_local_test_task(
+    task_id: str,
+    *,
+    audio_path: str,
+    audio_size: int,
+    audio_mtime_ns: int,
+    audio_sha256: str,
+    language: str,
+    status: str = "created",
+    payload_path: str = "",
+    meta_path: str = "",
+    semantic_debug_path: str = "",
+) -> None:
+    ensure_whisper_debug_schema()
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO whisper_local_test_task
+              (task_id, audio_path, audio_size, audio_mtime_ns, audio_sha256, language,
+               status, payload_path, meta_path, semantic_debug_path)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            ON DUPLICATE KEY UPDATE
+              audio_path = VALUES(audio_path),
+              audio_size = VALUES(audio_size),
+              audio_mtime_ns = VALUES(audio_mtime_ns),
+              audio_sha256 = VALUES(audio_sha256),
+              language = VALUES(language),
+              status = VALUES(status),
+              payload_path = IF(VALUES(payload_path) = '', payload_path, VALUES(payload_path)),
+              meta_path = IF(VALUES(meta_path) = '', meta_path, VALUES(meta_path)),
+              semantic_debug_path = IF(VALUES(semantic_debug_path) = '', semantic_debug_path, VALUES(semantic_debug_path))
+            """,
+            (
+                task_id,
+                audio_path,
+                audio_size,
+                audio_mtime_ns,
+                audio_sha256,
+                language,
+                status,
+                payload_path,
+                meta_path,
+                semantic_debug_path,
+            ),
+        )
+        conn.commit()
+
+
+def get_whisper_step_result(task_id: str, step_name: str) -> dict[str, Any] | None:
+    ensure_whisper_debug_schema()
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT *
+            FROM whisper_step_result
+            WHERE task_id = %s AND step_name = %s AND status = 'success'
+            """,
+            (task_id, step_name),
+        )
+        row = cur.fetchone()
+        if not row:
+            return None
+        for key in ("payload_json", "diagnostics_json"):
+            value = row.get(key)
+            if value:
+                row[key] = json.loads(value)
+        return row
+
+
+def upsert_whisper_step_result(
+    task_id: str,
+    step_name: str,
+    *,
+    status: str,
+    language: str = "",
+    model: str = "",
+    payload: dict[str, Any] | None = None,
+    diagnostics: dict[str, Any] | None = None,
+    error_message: str = "",
+) -> None:
+    ensure_whisper_debug_schema()
+    payload_json = json.dumps(payload, ensure_ascii=False) if payload is not None else None
+    diagnostics_json = json.dumps(diagnostics, ensure_ascii=False) if diagnostics is not None else None
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO whisper_step_result
+              (task_id, step_name, status, language, model, payload_json, diagnostics_json, error_message, completed_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, IF(%s = 'success', NOW(), NULL))
+            ON DUPLICATE KEY UPDATE
+              status = VALUES(status),
+              language = VALUES(language),
+              model = VALUES(model),
+              payload_json = VALUES(payload_json),
+              diagnostics_json = VALUES(diagnostics_json),
+              error_message = VALUES(error_message),
+              completed_at = IF(VALUES(status) = 'success', NOW(), completed_at)
+            """,
+            (
+                task_id,
+                step_name,
+                status,
+                language,
+                model,
+                payload_json,
+                diagnostics_json,
+                error_message,
+                status,
+            ),
+        )
+        conn.commit()
+
+
+def save_whisper_semantic_chunks(task_id: str, diagnostics: dict[str, Any]) -> None:
+    ensure_whisper_debug_schema()
+    chunks = diagnostics.get("chunks") or []
+    with connect() as conn:
+        cur = conn.cursor()
+        for chunk in chunks:
+            attempts = chunk.get("attempts") or []
+            validation = attempts[-1].get("validation") if attempts else None
+            result = {
+                "reason": chunk.get("reason"),
+                "accepted_attempt": chunk.get("accepted_attempt"),
+            }
+            cur.execute(
+                """
+                INSERT INTO whisper_semantic_chunk
+                  (task_id, chunk_index, status, word_start, word_end, accepted_attempt,
+                   left_context, editable_zone, right_context, attempts_json, validation_json, result_json)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  status = VALUES(status),
+                  word_start = VALUES(word_start),
+                  word_end = VALUES(word_end),
+                  accepted_attempt = VALUES(accepted_attempt),
+                  left_context = VALUES(left_context),
+                  editable_zone = VALUES(editable_zone),
+                  right_context = VALUES(right_context),
+                  attempts_json = VALUES(attempts_json),
+                  validation_json = VALUES(validation_json),
+                  result_json = VALUES(result_json)
+                """,
+                (
+                    task_id,
+                    int(chunk.get("chunk_index") or 0),
+                    str(chunk.get("status") or ""),
+                    int(chunk.get("word_start") or 0),
+                    int(chunk.get("word_end") or 0),
+                    chunk.get("accepted_attempt"),
+                    chunk.get("left_context"),
+                    chunk.get("editable_zone"),
+                    chunk.get("right_context"),
+                    json.dumps(attempts, ensure_ascii=False),
+                    json.dumps(validation, ensure_ascii=False) if validation is not None else None,
+                    json.dumps(result, ensure_ascii=False),
+                ),
+            )
+        conn.commit()
 
 
 def connect():

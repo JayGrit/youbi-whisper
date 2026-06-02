@@ -45,7 +45,7 @@ def _recognize(payload: dict[str, Any]) -> dict[str, Any]:
 
     try:
         audio = download(source_ref, _download_destination(session, source_ref))
-        data = recognize_speech(audio, session, language=language)
+        data = recognize_speech(audio, session, language=language, task_id=task_id)
         response: dict[str, Any] = {
             "ok": True,
             "task_id": task_id,

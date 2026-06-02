@@ -86,7 +86,7 @@ def handle(row: dict) -> dict[str, str]:
 
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
-        data = recognize_speech(vocals, session, language=source.asr_language)
+        data = recognize_speech(vocals, session, language=source.asr_language, task_id=task_id)
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等

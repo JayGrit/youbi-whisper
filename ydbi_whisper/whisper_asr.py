@@ -3,8 +3,10 @@ from __future__ import annotations
 import json
 import logging
 import re
+import wave
 from pathlib import Path
 
+from . import db
 from .config import (
     DEVICE,
     MODEL_ROOT,
@@ -462,7 +464,15 @@ def _regroup_aligned_segments(segments: list[dict], language: str, diagnostics: 
     return regrouped or segments
 
 
-def _align_whisperx_result(whisperx, result: dict, audio: object, language: str, runtime_device: str) -> dict:
+def _align_whisperx_result(
+    whisperx,
+    result: dict,
+    audio: object,
+    language: str,
+    runtime_device: str,
+    *,
+    task_id: str | None = None,
+) -> dict:
     if not WHISPERX_ALIGN or not result.get("segments"):
         return result
 
@@ -499,6 +509,7 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
     )
     aligned_segments = aligned.get("segments") or []
     semantic_diagnostics: dict = {
+        "task_id": task_id,
         "language": align_language,
         "input_aligned_segments": len(aligned_segments),
         "input_word_segments": len(aligned.get("word_segments") or []),
@@ -520,36 +531,43 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
     return aligned
 
 
+def _transcribe_whisperx_raw(model: object, vocals_file: Path, language: str, runtime_device: str) -> tuple[dict, object]:
+    import whisperx
+
+    log.info("whisperx loading audio file=%s", vocals_file)
+    audio = whisperx.load_audio(str(vocals_file))
+    log.info(
+        "whisperx transcribe start file=%s language=%s batch_size=%s chunk_size=%s runtime_device=%s",
+        vocals_file,
+        language,
+        WHISPERX_BATCH_SIZE,
+        WHISPERX_CHUNK_SIZE,
+        runtime_device,
+    )
+    result = model.transcribe(
+        audio,
+        batch_size=WHISPERX_BATCH_SIZE,
+        language=language,
+        chunk_size=WHISPERX_CHUNK_SIZE,
+        verbose=False,
+    )
+    segments = result.get("segments", [])
+    result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
+    log.info(
+        "whisperx transcribe done file=%s language=%s segments=%s text_chars=%s",
+        vocals_file,
+        result.get("language") or language,
+        len(segments),
+        len(result["text"]),
+    )
+    return result, audio
+
+
 def _transcribe(model: object, vocals_file: Path, language: str, runtime_device: str, word_timestamps: bool) -> dict:
     if WHISPER_ENGINE == "whisperx":
         import whisperx
 
-        log.info("whisperx loading audio file=%s", vocals_file)
-        audio = whisperx.load_audio(str(vocals_file))
-        log.info(
-            "whisperx transcribe start file=%s language=%s batch_size=%s chunk_size=%s runtime_device=%s",
-            vocals_file,
-            language,
-            WHISPERX_BATCH_SIZE,
-            WHISPERX_CHUNK_SIZE,
-            runtime_device,
-        )
-        result = model.transcribe(
-            audio,
-            batch_size=WHISPERX_BATCH_SIZE,
-            language=language,
-            chunk_size=WHISPERX_CHUNK_SIZE,
-            verbose=False,
-        )
-        segments = result.get("segments", [])
-        result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
-        log.info(
-            "whisperx transcribe done file=%s language=%s segments=%s text_chars=%s",
-            vocals_file,
-            result.get("language") or language,
-            len(segments),
-            len(result["text"]),
-        )
+        result, audio = _transcribe_whisperx_raw(model, vocals_file, language, runtime_device)
         result = _align_whisperx_result(whisperx, result, audio, language, runtime_device)
         return result
 
@@ -568,9 +586,64 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
     )
 
 
-def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
+def _audio_duration_ms(audio_file: Path) -> int:
+    if audio_file.suffix.lower() == ".wav":
+        with wave.open(str(audio_file), "rb") as wav_file:
+            frame_rate = wav_file.getframerate()
+            if frame_rate > 0:
+                return int(round(wav_file.getnframes() * 1000 / frame_rate))
+
     from pydub import AudioSegment
 
+    return len(AudioSegment.from_file(audio_file))
+
+
+def _transcribe_resumable(model: object, vocals_file: Path, language: str, runtime_device: str, word_timestamps: bool, task_id: str | None) -> dict:
+    if not task_id or WHISPER_ENGINE != "whisperx":
+        return _transcribe(model, vocals_file, language, runtime_device, word_timestamps)
+
+    import whisperx
+
+    cached_align = db.get_whisper_step_result(task_id, "align_regrouped")
+    if cached_align:
+        log.info("whisper resume task=%s step=align_regrouped", task_id)
+        return cached_align["payload_json"]
+
+    cached_raw = db.get_whisper_step_result(task_id, "transcribe_raw")
+    audio = None
+    if cached_raw:
+        log.info("whisper resume task=%s step=transcribe_raw", task_id)
+        result = cached_raw["payload_json"]
+        audio = whisperx.load_audio(str(vocals_file))
+    else:
+        result, audio = _transcribe_whisperx_raw(model, vocals_file, language, runtime_device)
+        db.upsert_whisper_step_result(
+            task_id,
+            "transcribe_raw",
+            status="success",
+            language=str(result.get("language") or language),
+            model=WHISPER_MODEL,
+            payload=result,
+            diagnostics={
+                "segments": len(result.get("segments") or []),
+                "text_chars": len(str(result.get("text") or "")),
+            },
+        )
+
+    aligned = _align_whisperx_result(whisperx, result, audio, language, runtime_device, task_id=task_id)
+    db.upsert_whisper_step_result(
+        task_id,
+        "align_regrouped",
+        status="success",
+        language=str(aligned.get("language") or language),
+        model=WHISPER_MODEL,
+        payload=aligned,
+        diagnostics=aligned.get("semantic_caption_segmentation") or {},
+    )
+    return aligned
+
+
+def recognize_speech(vocals_file: Path, session: Path, language: str, task_id: str | None = None) -> dict:
     # 当前任务的 metadata 目录，用于存放识别过程或后续阶段生成的元数据
     metadata_dir = session / "metadata"
 
@@ -578,6 +651,23 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     # parents=True 表示父目录不存在时也一并创建
     # exist_ok=True 表示目录已存在时不报错
     metadata_dir.mkdir(parents=True, exist_ok=True)
+    semantic_debug_path = metadata_dir / "semantic_caption_segmentation.json"
+
+    if task_id:
+        cached_final = db.get_whisper_step_result(task_id, "final_payload")
+        if cached_final:
+            log.info("whisper resume task=%s step=final_payload", task_id)
+            payload = cached_final["payload_json"]
+            cached_align = db.get_whisper_step_result(task_id, "align_regrouped")
+            semantic_debug = (cached_align or {}).get("diagnostics_json") or {
+                "enabled": WHISPER_SEMANTIC_SEGMENT_ENABLED,
+                "status": "not_available",
+                "reason": "cached_final_payload_has_no_align_diagnostics",
+            }
+            semantic_debug_path.write_text(json.dumps(semantic_debug, ensure_ascii=False, indent=2), encoding="utf-8")
+            result = payload.setdefault("result", {})
+            result["semantic_caption_debug_path"] = str(semantic_debug_path)
+            return payload
 
     # 加载或复用 Whisper 模型
     model = _load_model()
@@ -614,8 +704,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     # language：指定识别语言
     # word_timestamps：是否返回词级时间戳
     # verbose=False：关闭详细输出
-    result = _transcribe(model, vocals_file, language, runtime_device, word_timestamps)
-    semantic_debug_path = metadata_dir / "semantic_caption_segmentation.json"
+    result = _transcribe_resumable(model, vocals_file, language, runtime_device, word_timestamps, task_id)
     semantic_debug = result.get("semantic_caption_segmentation") or {
         "enabled": WHISPER_SEMANTIC_SEGMENT_ENABLED,
         "status": "not_available",
@@ -623,6 +712,8 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     }
     semantic_debug_path.write_text(json.dumps(semantic_debug, ensure_ascii=False, indent=2), encoding="utf-8")
     log.info("semantic caption diagnostics written path=%s", semantic_debug_path)
+    if task_id:
+        db.save_whisper_semantic_chunks(task_id, semantic_debug)
 
     # 将 Whisper 返回的 segments 转成项目内部统一的 utterances 格式
     utterances = _convert_segments(result.get("segments", []))
@@ -634,7 +725,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
 
     # 使用 pydub 读取音频文件，并计算音频总时长
     # len(AudioSegment) 返回毫秒数
-    duration_ms = len(AudioSegment.from_file(vocals_file))
+    duration_ms = _audio_duration_ms(vocals_file)
 
     # 组装最终返回结果
     # 结构尽量对齐常见 ASR 服务返回格式：
@@ -656,6 +747,20 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
             "semantic_caption_debug_path": str(semantic_debug_path),
         },
     }
+    if task_id:
+        db.upsert_whisper_step_result(
+            task_id,
+            "final_payload",
+            status="success",
+            language=language,
+            model=WHISPER_MODEL,
+            payload=payload,
+            diagnostics={
+                "segments": len(utterances),
+                "text_chars": len(str((result.get("text") or "").strip())),
+                "semantic_caption_debug_path": str(semantic_debug_path),
+            },
+        )
 
     # 返回标准化后的 ASR payload
     return payload
