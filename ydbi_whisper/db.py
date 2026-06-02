@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import os
-import json
 from collections.abc import Mapping
 from pathlib import Path
 from typing import Any
@@ -9,7 +8,7 @@ from typing import Any
 import mysql.connector
 
 from . import video_info
-from .asr_segments import normalize_asr_segments
+from .asr_segments import fix_asr_segment_rows
 from .config import MYSQL_CONFIG
 from .stages import FAILED, READY, RUNNING, SUCCESS, stage_for
 
@@ -42,6 +41,83 @@ def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
             cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
 
 
+def _table_columns(cur, table: str) -> set[str]:
+    cur.execute(
+        """
+        SELECT column_name
+        FROM information_schema.columns
+        WHERE table_schema = DATABASE() AND table_name = %s
+        """,
+        (table,),
+    )
+    return {_row_value(row) for row in cur.fetchall()}
+
+
+def _table_indexes(cur, table: str) -> set[str]:
+    cur.execute(
+        """
+        SELECT DISTINCT index_name
+        FROM information_schema.statistics
+        WHERE table_schema = DATABASE() AND table_name = %s
+        """,
+        (table,),
+    )
+    return {_row_value(row) for row in cur.fetchall()}
+
+
+def _drop_index_if_exists(cur, table: str, index_name: str) -> None:
+    if index_name in _table_indexes(cur, table):
+        cur.execute(f"ALTER TABLE {table} DROP INDEX {index_name}")
+
+
+def _drop_column_if_exists(cur, table: str, column_name: str) -> None:
+    if column_name in _table_columns(cur, table):
+        cur.execute(f"ALTER TABLE {table} DROP COLUMN {column_name}")
+
+
+def _migrate_asr_schema(cur) -> None:
+    if "segment_type" in _table_columns(cur, "yd_asr_segment"):
+        cur.execute(
+            """
+            DELETE old_segment
+            FROM yd_asr_segment old_segment
+            JOIN yd_asr_segment fixed_segment
+              ON fixed_segment.task_id = old_segment.task_id
+             AND fixed_segment.item_index = old_segment.item_index
+             AND fixed_segment.segment_type = 'fixed'
+            WHERE old_segment.segment_type <> 'fixed'
+            """
+        )
+        cur.execute(
+            """
+            DELETE duplicate_segment
+            FROM yd_asr_segment duplicate_segment
+            JOIN yd_asr_segment keep_segment
+              ON keep_segment.task_id = duplicate_segment.task_id
+             AND keep_segment.item_index = duplicate_segment.item_index
+             AND keep_segment.id < duplicate_segment.id
+            """
+        )
+    _drop_index_if_exists(cur, "yd_asr_segment", "uk_asr_segment")
+    _drop_index_if_exists(cur, "yd_asr_segment", "idx_asr_segment_task")
+    _drop_column_if_exists(cur, "yd_asr_segment", "segment_type")
+    _drop_column_if_exists(cur, "yd_asr_segment", "words_json")
+    if "uk_asr_segment" not in _table_indexes(cur, "yd_asr_segment"):
+        cur.execute("ALTER TABLE yd_asr_segment ADD UNIQUE KEY uk_asr_segment (task_id, item_index)")
+    if "idx_asr_segment_task" not in _table_indexes(cur, "yd_asr_segment"):
+        cur.execute("ALTER TABLE yd_asr_segment ADD KEY idx_asr_segment_task (task_id, item_index)")
+
+    if "segment_type" in _table_columns(cur, "whisper_word_timestamp"):
+        cur.execute("DELETE FROM whisper_word_timestamp WHERE segment_type <> 'raw'")
+    _drop_index_if_exists(cur, "whisper_word_timestamp", "uk_whisper_word")
+    _drop_index_if_exists(cur, "whisper_word_timestamp", "idx_whisper_word_task")
+    _drop_column_if_exists(cur, "whisper_word_timestamp", "segment_type")
+    if "uk_whisper_word" not in _table_indexes(cur, "whisper_word_timestamp"):
+        cur.execute("ALTER TABLE whisper_word_timestamp ADD UNIQUE KEY uk_whisper_word (task_id, segment_index, word_index)")
+    if "idx_whisper_word_task" not in _table_indexes(cur, "whisper_word_timestamp"):
+        cur.execute("ALTER TABLE whisper_word_timestamp ADD KEY idx_whisper_word_task (task_id, start_time, end_time)")
+
+
 def ensure_asr_schema() -> None:
     with connect() as conn:
         cur = conn.cursor()
@@ -62,17 +138,15 @@ def ensure_asr_schema() -> None:
             CREATE TABLE IF NOT EXISTS yd_asr_segment (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               task_id VARCHAR(64) NOT NULL,
-              segment_type VARCHAR(16) NOT NULL,
               item_index INT NOT NULL,
               text MEDIUMTEXT NOT NULL,
               start_time INT NOT NULL,
               end_time INT NOT NULL,
               speaker VARCHAR(64),
-              words_json MEDIUMTEXT,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uk_asr_segment (task_id, segment_type, item_index),
-              KEY idx_asr_segment_task (task_id, segment_type, item_index)
+              UNIQUE KEY uk_asr_segment (task_id, item_index),
+              KEY idx_asr_segment_task (task_id, item_index)
             )
             """
         )
@@ -81,7 +155,6 @@ def ensure_asr_schema() -> None:
             CREATE TABLE IF NOT EXISTS whisper_word_timestamp (
               id BIGINT PRIMARY KEY AUTO_INCREMENT,
               task_id VARCHAR(64) NOT NULL,
-              segment_type VARCHAR(16) NOT NULL,
               segment_index INT NOT NULL,
               word_index INT NOT NULL,
               text VARCHAR(255) NOT NULL,
@@ -89,8 +162,8 @@ def ensure_asr_schema() -> None:
               end_time INT NOT NULL,
               created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
               updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uk_whisper_word (task_id, segment_type, segment_index, word_index),
-              KEY idx_whisper_word_task (task_id, segment_type, start_time, end_time)
+              UNIQUE KEY uk_whisper_word (task_id, segment_index, word_index),
+              KEY idx_whisper_word_task (task_id, start_time, end_time)
             )
             """
         )
@@ -99,13 +172,13 @@ def ensure_asr_schema() -> None:
             "yd_asr_segment",
             {
                 "speaker": "VARCHAR(64)",
-                "words_json": "MEDIUMTEXT",
             },
         )
+        _migrate_asr_schema(cur)
         conn.commit()
 
 
-def _word_timestamp_rows(task_id: str, segment_type: str, segments: list[dict[str, Any]]) -> list[tuple]:
+def _word_timestamp_rows(task_id: str, segments: list[dict[str, Any]]) -> list[tuple]:
     def time_ms(word: dict[str, Any], ms_key: str, seconds_key: str) -> int:
         if word.get(ms_key) is not None:
             return int(word.get(ms_key) or 0)
@@ -120,7 +193,6 @@ def _word_timestamp_rows(task_id: str, segment_type: str, segments: list[dict[st
             rows.append(
                 (
                     task_id,
-                    segment_type,
                     segment_index,
                     word_index,
                     text[:255],
@@ -131,21 +203,18 @@ def _word_timestamp_rows(task_id: str, segment_type: str, segments: list[dict[st
     return rows
 
 
-def save_word_timestamps(task_id: str, segment_type: str, segments: list[dict[str, Any]]) -> int:
+def save_word_timestamps(task_id: str, segments: list[dict[str, Any]]) -> int:
     ensure_asr_schema()
-    rows = _word_timestamp_rows(task_id, segment_type, segments)
+    rows = _word_timestamp_rows(task_id, segments)
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute(
-            "DELETE FROM whisper_word_timestamp WHERE task_id = %s AND segment_type = %s",
-            (task_id, segment_type),
-        )
+        cur.execute("DELETE FROM whisper_word_timestamp WHERE task_id = %s", (task_id,))
         if rows:
             cur.executemany(
                 """
                 INSERT INTO whisper_word_timestamp
-                  (task_id, segment_type, segment_index, word_index, text, start_time, end_time)
-                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                  (task_id, segment_index, word_index, text, start_time, end_time)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                   text = VALUES(text),
                   start_time = VALUES(start_time),
@@ -159,7 +228,6 @@ def save_word_timestamps(task_id: str, segment_type: str, segments: list[dict[st
 
 def save_asr_segments(
     task_id: str,
-    segment_type: str,
     segments: list[dict[str, Any]],
     *,
     language: str | None = None,
@@ -181,56 +249,45 @@ def save_asr_segments(
                 """,
                 (task_id, language, int(duration_ms or 0), full_text),
             )
-        cur.execute(
-            "DELETE FROM yd_asr_segment WHERE task_id = %s AND segment_type = %s",
-            (task_id, segment_type),
-        )
+        cur.execute("DELETE FROM yd_asr_segment WHERE task_id = %s", (task_id,))
         for index, item in enumerate(segments):
-            words = item.get("words")
-            words_json = item.get("words_json")
-            if words_json is None and words is not None:
-                words_json = json.dumps(words, ensure_ascii=False)
             cur.execute(
                 """
                 INSERT INTO yd_asr_segment
-                  (task_id, segment_type, item_index, text, start_time, end_time, speaker, words_json)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                  (task_id, item_index, text, start_time, end_time, speaker)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                   text = VALUES(text),
                   start_time = VALUES(start_time),
                   end_time = VALUES(end_time),
-                  speaker = VALUES(speaker),
-                  words_json = VALUES(words_json)
+                  speaker = VALUES(speaker)
                 """,
                 (
                     task_id,
-                    segment_type,
                     index,
                     str(item.get("text") or "").strip(),
                     int(item.get("start_time") or 0),
                     int(item.get("end_time") or 0),
                     str(item.get("speaker") or "") or None,
-                    words_json,
                 ),
             )
         conn.commit()
 
 
-def save_asr_result(task_id: str, language: str, payload: dict[str, Any], segment_type: str = "raw") -> list[dict[str, Any]]:
+def save_asr_result(task_id: str, language: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
     audio_info = payload.get("audio_info") or {}
     result = payload.get("result") or {}
     duration_ms = int(audio_info.get("duration") or 0)
     full_text = str(result.get("text") or "")
-    segments = normalize_asr_segments(result.get("utterances") or [])
+    segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
     save_asr_segments(
         task_id,
-        segment_type,
         segments,
         language=language,
         duration_ms=duration_ms,
         full_text=full_text,
     )
-    save_word_timestamps(task_id, segment_type, segments)
+    save_word_timestamps(task_id, segments)
     return segments
 
 

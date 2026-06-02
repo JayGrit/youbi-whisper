@@ -39,7 +39,7 @@ def _recognize(payload: dict[str, Any]) -> dict[str, Any]:
 
     source_ref = _input_ref(payload)
     language = str(payload.get("language") or "en").strip()
-    include_fixed = bool(payload.get("include_fixed", True))
+    include_segments = bool(payload.get("include_segments", True))
     task_id = f"test-{uuid.uuid4().hex}"
     session = task_work_dir(task_id)
 
@@ -53,10 +53,10 @@ def _recognize(payload: dict[str, Any]) -> dict[str, Any]:
             "config": current_asr_config(language=language),
             "result": data,
         }
-        if include_fixed:
+        if include_segments:
             duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
             utterances = (data.get("result") or {}).get("utterances") or []
-            response["fixed_utterances"] = fix_asr_segment_rows(utterances, duration_ms)
+            response["utterances"] = fix_asr_segment_rows(utterances, duration_ms)
         return response
     finally:
         shutil.rmtree(session, ignore_errors=True)

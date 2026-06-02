@@ -5,7 +5,6 @@ import shutil
 from pathlib import Path
 
 from ydbi_whisper import db
-from ydbi_whisper.asr_segments import fix_asr_segment_rows
 from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
@@ -89,46 +88,24 @@ def handle(row: dict) -> dict[str, str]:
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
         data = recognize_speech(vocals, session, language=source.asr_language)
 
-        # 保存原始 ASR 识别结果
-        # 这里保存的是 raw 版本，也就是 Whisper 原始分段转换后的结果
-        raw_segments = db.save_asr_result(task_id, source.asr_language, data, "raw")
+        # 保存后处理后的 ASR 识别结果
+        # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
+        asr_segments = db.save_asr_result(task_id, source.asr_language, data)
 
         # 如果 Whisper 返回的分段数量过多，则直接中断任务
         # 避免后续处理超出系统设计上限
-        if len(raw_segments) > MAX_ASR_SEGMENTS:
-            raise ValueError(f"Whisper produced {len(raw_segments)} segments, exceeding the {MAX_ASR_SEGMENTS} limit.")
+        if len(asr_segments) > MAX_ASR_SEGMENTS:
+            raise ValueError(f"Whisper produced {len(asr_segments)} segments, exceeding the {MAX_ASR_SEGMENTS} limit.")
 
-        # 从 ASR 返回结果中读取音频总时长，单位通常是毫秒
-        duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
-
-        # 从 ASR 返回结果中读取完整识别文本
-        full_text = str((data.get("result") or {}).get("text") or "")
-
-        # 对原始 ASR 分段进行修正
-        # 主要包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
-        fixed_segments = fix_asr_segment_rows(raw_segments, duration_ms)
-
-        # 将修正后的 ASR 分段保存为 fixed 版本
-        # 后续翻译、字幕合并等流程一般优先使用 fixed 版本
-        db.save_asr_segments(
-            task_id,
-            "fixed",
-            fixed_segments,
-            language=source.asr_language,
-            duration_ms=duration_ms,
-            full_text=full_text,
-        )
-
-        # 统计所有 raw segment 中的词级时间戳数量
+        # 统计所有 ASR segment 中的词级时间戳数量
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
-        word_count = sum(len(item.get("words") or []) for item in raw_segments)
+        word_count = sum(len(item.get("words") or []) for item in asr_segments)
 
-        # 打印识别完成日志，包括 raw 分段数、fixed 分段数和词级数量
+        # 打印识别完成日志，包括分段数和词级数量
         log.info(
-            "whisper recognized task=%s raw_segments=%d fixed_segments=%d words=%d",
+            "whisper recognized task=%s segments=%d words=%d",
             task_id,
-            len(raw_segments),
-            len(fixed_segments),
+            len(asr_segments),
             word_count,
         )
 
@@ -137,20 +114,16 @@ def handle(row: dict) -> dict[str, str]:
         # ignore_errors=True 表示清理失败时不再额外抛异常
         shutil.rmtree(session, ignore_errors=True)
 
-    # raw ASR 结果在数据库中的引用地址
-    # 这里不是实际文件路径，而是一个逻辑引用，表示从 yd_asr_segment 表读取 raw 版本
-    asr_ref = f"db://yd_asr_segment/{task_id}/raw"
-
-    # fixed ASR 结果在数据库中的引用地址
-    # 表示从 yd_asr_segment 表读取 fixed 版本
-    fixed_asr_ref = f"db://yd_asr_segment/{task_id}/fixed"
+    # ASR 结果在数据库中的引用地址
+    # 这里不是实际文件路径，而是一个逻辑引用，表示从 yd_asr_segment 表读取该任务分段
+    asr_ref = f"db://yd_asr_segment/{task_id}"
 
     # 打印当前 whisper 阶段最终产物引用
-    log.info("whisper output task=%s asr_ref=%s fixed_asr_ref=%s", task_id, asr_ref, fixed_asr_ref)
+    log.info("whisper output task=%s asr_ref=%s", task_id, asr_ref)
 
     # 返回给 worker 框架的阶段产物
     # 一般会被写回当前阶段表或任务状态中，供后续 translator / merger 等阶段使用
-    return {"asr_json_path": asr_ref, "asr_fixed_json_path": fixed_asr_ref}
+    return {"asr_json_path": asr_ref}
 
 
 def main() -> None:
