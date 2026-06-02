@@ -404,6 +404,20 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         return task
 
 
+def list_openai_api_keys() -> list[dict[str, Any]]:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT id, provider, base_url, api_key, model, scope, label, priority
+            FROM yd_openai_api_key
+            WHERE enabled = 1
+            ORDER BY priority ASC, id ASC
+            """
+        )
+        return list(cur.fetchall())
+
+
 def demucs_operator_for(task_id: str) -> str | None:
     with connect() as conn:
         cur = _dict_cursor(conn)

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import logging
 import re
 from pathlib import Path
@@ -22,6 +23,9 @@ from .config import (
     WHISPERX_COMPUTE_TYPE,
     WHISPERX_REGROUP_MAX_CHARS,
     WHISPERX_REGROUP_MAX_DURATION_MS,
+    WHISPER_SEMANTIC_SEGMENT_ENABLED,
+    WHISPER_SEMANTIC_SEGMENT_MAX_WORDS,
+    WHISPER_SEMANTIC_SEGMENT_TARGET_WORDS,
     WHISPERX_VAD_METHOD,
     WHISPERX_VAD_OFFSET,
     WHISPERX_VAD_ONSET,
@@ -71,6 +75,11 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
             "regroup": {
                 "max_chars": WHISPERX_REGROUP_MAX_CHARS,
                 "max_duration_ms": WHISPERX_REGROUP_MAX_DURATION_MS,
+            },
+            "semantic_caption": {
+                "enabled": WHISPER_SEMANTIC_SEGMENT_ENABLED,
+                "target_words": WHISPER_SEMANTIC_SEGMENT_TARGET_WORDS,
+                "max_words": WHISPER_SEMANTIC_SEGMENT_MAX_WORDS,
             },
         },
     }
@@ -387,7 +396,7 @@ def _regroup_words_by_punctuation(words: list[dict]) -> list[dict]:
     return regrouped
 
 
-def _regroup_aligned_segments(segments: list[dict], language: str) -> list[dict]:
+def _regroup_aligned_segments(segments: list[dict], language: str, diagnostics: dict | None = None) -> list[dict]:
     regrouped = []
     current_words = []
 
@@ -395,9 +404,41 @@ def _regroup_aligned_segments(segments: list[dict], language: str) -> list[dict]
         nonlocal current_words
         if not current_words:
             return
-        sentence_segments = _segment_words_with_pysbd(current_words, language)
+        sentence_segments = []
+        try:
+            from .semantic_caption import segment_words_with_llm
+
+            if diagnostics is not None:
+                sentence_segments = segment_words_with_llm(current_words, language, diagnostics) or []
+        except Exception as exc:
+            log.warning("semantic caption segmentation failed before fallback language=%s: %s", language, exc)
+            if diagnostics is not None:
+                diagnostics.setdefault("errors", []).append(
+                    {
+                        "type": type(exc).__name__,
+                        "message": str(exc),
+                    }
+                )
+        if not sentence_segments:
+            sentence_segments = _segment_words_with_pysbd(current_words, language)
+            if sentence_segments and diagnostics is not None:
+                diagnostics.setdefault("rule_fallbacks", []).append(
+                    {
+                        "method": "pysbd",
+                        "word_count": len(current_words),
+                        "segments": len(sentence_segments),
+                    }
+                )
         if not sentence_segments:
             sentence_segments = _regroup_words_by_punctuation(current_words)
+            if diagnostics is not None:
+                diagnostics.setdefault("rule_fallbacks", []).append(
+                    {
+                        "method": "punctuation",
+                        "word_count": len(current_words),
+                        "segments": len(sentence_segments),
+                    }
+                )
         regrouped.extend(sentence_segments)
         current_words = []
 
@@ -457,10 +498,18 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
         print_progress=False,
     )
     aligned_segments = aligned.get("segments") or []
-    regrouped_segments = _regroup_aligned_segments(aligned_segments, align_language)
+    semantic_diagnostics: dict = {
+        "language": align_language,
+        "input_aligned_segments": len(aligned_segments),
+        "input_word_segments": len(aligned.get("word_segments") or []),
+        "chunks": [],
+    }
+    regrouped_segments = _regroup_aligned_segments(aligned_segments, align_language, semantic_diagnostics)
     aligned["segments"] = regrouped_segments
     aligned["text"] = " ".join(str(seg.get("text") or "").strip() for seg in regrouped_segments).strip()
     aligned["language"] = align_language
+    semantic_diagnostics["output_segments"] = len(regrouped_segments)
+    aligned["semantic_caption_segmentation"] = semantic_diagnostics
     log.info(
         "whisperx align done language=%s aligned_segments=%s regrouped_segments=%s word_segments=%s",
         align_language,
@@ -566,6 +615,14 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
     # word_timestamps：是否返回词级时间戳
     # verbose=False：关闭详细输出
     result = _transcribe(model, vocals_file, language, runtime_device, word_timestamps)
+    semantic_debug_path = metadata_dir / "semantic_caption_segmentation.json"
+    semantic_debug = result.get("semantic_caption_segmentation") or {
+        "enabled": WHISPER_SEMANTIC_SEGMENT_ENABLED,
+        "status": "not_available",
+        "reason": "transcribe_result_has_no_semantic_caption_diagnostics",
+    }
+    semantic_debug_path.write_text(json.dumps(semantic_debug, ensure_ascii=False, indent=2), encoding="utf-8")
+    log.info("semantic caption diagnostics written path=%s", semantic_debug_path)
 
     # 将 Whisper 返回的 segments 转成项目内部统一的 utterances 格式
     utterances = _convert_segments(result.get("segments", []))
@@ -594,6 +651,9 @@ def recognize_speech(vocals_file: Path, session: Path, language: str) -> dict:
 
             # 分段识别结果
             "utterances": utterances,
+
+            # 本轮语义字幕切分的完整诊断输出文件
+            "semantic_caption_debug_path": str(semantic_debug_path),
         },
     }
 
