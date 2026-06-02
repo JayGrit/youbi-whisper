@@ -76,6 +76,24 @@ def ensure_asr_schema() -> None:
             )
             """
         )
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS whisper_word_timestamp (
+              id BIGINT PRIMARY KEY AUTO_INCREMENT,
+              task_id VARCHAR(64) NOT NULL,
+              segment_type VARCHAR(16) NOT NULL,
+              segment_index INT NOT NULL,
+              word_index INT NOT NULL,
+              text VARCHAR(255) NOT NULL,
+              start_time INT NOT NULL,
+              end_time INT NOT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_whisper_word (task_id, segment_type, segment_index, word_index),
+              KEY idx_whisper_word_task (task_id, segment_type, start_time, end_time)
+            )
+            """
+        )
         _ensure_columns(
             cur,
             "yd_asr_segment",
@@ -85,6 +103,58 @@ def ensure_asr_schema() -> None:
             },
         )
         conn.commit()
+
+
+def _word_timestamp_rows(task_id: str, segment_type: str, segments: list[dict[str, Any]]) -> list[tuple]:
+    def time_ms(word: dict[str, Any], ms_key: str, seconds_key: str) -> int:
+        if word.get(ms_key) is not None:
+            return int(word.get(ms_key) or 0)
+        return int(round(float(word.get(seconds_key) or 0) * 1000))
+
+    rows = []
+    for segment_index, segment in enumerate(segments):
+        for word_index, word in enumerate(segment.get("words") or []):
+            text = str(word.get("text") or word.get("word") or "").strip()
+            if not text:
+                continue
+            rows.append(
+                (
+                    task_id,
+                    segment_type,
+                    segment_index,
+                    word_index,
+                    text[:255],
+                    time_ms(word, "start_time", "start"),
+                    time_ms(word, "end_time", "end"),
+                )
+            )
+    return rows
+
+
+def save_word_timestamps(task_id: str, segment_type: str, segments: list[dict[str, Any]]) -> int:
+    ensure_asr_schema()
+    rows = _word_timestamp_rows(task_id, segment_type, segments)
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            "DELETE FROM whisper_word_timestamp WHERE task_id = %s AND segment_type = %s",
+            (task_id, segment_type),
+        )
+        if rows:
+            cur.executemany(
+                """
+                INSERT INTO whisper_word_timestamp
+                  (task_id, segment_type, segment_index, word_index, text, start_time, end_time)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                ON DUPLICATE KEY UPDATE
+                  text = VALUES(text),
+                  start_time = VALUES(start_time),
+                  end_time = VALUES(end_time)
+                """,
+                rows,
+            )
+        conn.commit()
+    return len(rows)
 
 
 def save_asr_segments(
@@ -160,6 +230,7 @@ def save_asr_result(task_id: str, language: str, payload: dict[str, Any], segmen
         duration_ms=duration_ms,
         full_text=full_text,
     )
+    save_word_timestamps(task_id, segment_type, segments)
     return segments
 
 
@@ -262,7 +333,7 @@ def ensure_service_heartbeat_schema() -> None:
     _heartbeat_schema_ready = True
 
 
-def record_service_poll(stage_name: str) -> None:
+def record_service_poll() -> None:
     column = _heartbeat_device_column()
     if not column:
         return
@@ -277,7 +348,7 @@ def record_service_poll(stage_name: str) -> None:
             VALUES (%s, NOW())
             ON DUPLICATE KEY UPDATE {quoted_column} = VALUES({quoted_column})
             """,
-            (stage_name,),
+            ("whisper",),
         )
         conn.commit()
 

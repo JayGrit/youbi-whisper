@@ -20,12 +20,12 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
     def heartbeat_loop() -> None:
         while not stop_event.wait(POLL_INTERVAL_SECONDS):
             try:
-                db.record_service_poll(stage_name)
+                db.record_service_poll()
             except Exception:
                 log.exception("%s failed to update task heartbeat", stage_name)
 
     try:
-        db.record_service_poll(stage_name)
+        db.record_service_poll()
     except Exception:
         log.exception("%s failed to update task heartbeat", stage_name)
     thread = threading.Thread(target=heartbeat_loop, name=f"{stage_name}-heartbeat", daemon=True)
@@ -33,12 +33,13 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
     return stop_event
 
 
-def run_polling_worker(stage_name: str, handler: Handler) -> None:
+def run_polling_worker(handler: Handler) -> None:
+    stage_name = "whisper";
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log.info("%s service started; polling every %ss", stage_name, POLL_INTERVAL_SECONDS)
+    log.info("whisper service started")
     while True:
         try:
-            db.record_service_poll(stage_name)
+            db.record_service_poll()
             recycled = db.recycle_stale_running(stage_name)
             if recycled:
                 log.warning("%s recycled %d stale running task(s)", stage_name, recycled)
