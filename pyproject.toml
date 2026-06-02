@@ -7,6 +7,7 @@ dependencies = [
   "mysql-connector-python>=9.0.0",
   "openai-whisper",
   "pydub",
+  "pysbd>=0.3.4",
   "whisperx",
 ]
 

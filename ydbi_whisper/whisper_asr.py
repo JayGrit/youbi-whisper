@@ -267,7 +267,82 @@ def _split_long_segment_on_minor_punctuation(segment: dict) -> list[dict]:
     return split_segments or [segment]
 
 
-def _regroup_aligned_segments(segments: list[dict]) -> list[dict]:
+def _sentence_segmenter_language(language: str) -> str:
+    normalized = str(language or "en").strip().lower().replace("_", "-")
+    if not normalized:
+        return "en"
+    primary = normalized.split("-", 1)[0]
+    return {
+        "zh": "zh",
+        "cn": "zh",
+        "ja": "ja",
+        "jp": "ja",
+        "ko": "ko",
+    }.get(primary, primary)
+
+
+def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
+    try:
+        import pysbd
+    except Exception as exc:
+        log.warning("pysbd import failed, fallback to punctuation regroup: %s", exc)
+        return []
+
+    word_spans = []
+    text_parts = []
+    cursor = 0
+    for word in words:
+        text = _word_text(word)
+        if not text:
+            continue
+        if text_parts:
+            text_parts.append(" ")
+            cursor += 1
+        start = cursor
+        text_parts.append(text)
+        cursor += len(text)
+        word_spans.append((start, cursor, word))
+
+    full_text = "".join(text_parts).strip()
+    if not full_text or not word_spans:
+        return []
+
+    segmenter_language = _sentence_segmenter_language(language)
+    try:
+        segmenter = pysbd.Segmenter(language=segmenter_language, clean=False)
+        sentence_texts = [sentence.strip() for sentence in segmenter.segment(full_text) if sentence.strip()]
+    except Exception as exc:
+        log.warning("pysbd segment failed language=%s, fallback to punctuation regroup: %s", segmenter_language, exc)
+        return []
+
+    if len(sentence_texts) <= 1:
+        return []
+
+    segments = []
+    search_from = 0
+    word_index = 0
+    for sentence in sentence_texts:
+        sentence_start = full_text.find(sentence, search_from)
+        if sentence_start < 0:
+            return []
+        sentence_end = sentence_start + len(sentence)
+        sentence_words = []
+        while word_index < len(word_spans) and word_spans[word_index][1] <= sentence_start:
+            word_index += 1
+        scan_index = word_index
+        while scan_index < len(word_spans) and word_spans[scan_index][0] < sentence_end:
+            sentence_words.append(word_spans[scan_index][2])
+            scan_index += 1
+        word_index = scan_index
+        segment = _segment_from_words(sentence_words)
+        if segment is not None:
+            segments.extend(_split_long_segment_on_minor_punctuation(segment))
+        search_from = sentence_end
+
+    return segments
+
+
+def _regroup_words_by_punctuation(words: list[dict]) -> list[dict]:
     regrouped = []
     current_words = []
 
@@ -278,6 +353,36 @@ def _regroup_aligned_segments(segments: list[dict]) -> list[dict]:
             current_words = []
             return
         regrouped.extend(_split_long_segment_on_minor_punctuation(segment))
+        current_words = []
+
+    for word in words:
+        text = _word_text(word)
+        if not text:
+            continue
+        if "start" not in word or "end" not in word:
+            flush()
+            continue
+
+        current_words.append(word)
+        if SENTENCE_END_RE.search(text):
+            flush()
+
+    flush()
+    return regrouped
+
+
+def _regroup_aligned_segments(segments: list[dict], language: str) -> list[dict]:
+    regrouped = []
+    current_words = []
+
+    def flush() -> None:
+        nonlocal current_words
+        if not current_words:
+            return
+        sentence_segments = _segment_words_with_pysbd(current_words, language)
+        if not sentence_segments:
+            sentence_segments = _regroup_words_by_punctuation(current_words)
+        regrouped.extend(sentence_segments)
         current_words = []
 
     for segment in segments:
@@ -294,10 +399,7 @@ def _regroup_aligned_segments(segments: list[dict]) -> list[dict]:
             if "start" not in word or "end" not in word:
                 flush()
                 continue
-
             current_words.append(word)
-            if SENTENCE_END_RE.search(text):
-                flush()
 
     flush()
     return regrouped or segments
@@ -339,7 +441,7 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
         print_progress=False,
     )
     aligned_segments = aligned.get("segments") or []
-    regrouped_segments = _regroup_aligned_segments(aligned_segments)
+    regrouped_segments = _regroup_aligned_segments(aligned_segments, align_language)
     aligned["segments"] = regrouped_segments
     aligned["text"] = " ".join(str(seg.get("text") or "").strip() for seg in regrouped_segments).strip()
     aligned["language"] = align_language
