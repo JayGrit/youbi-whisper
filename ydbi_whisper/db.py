@@ -9,7 +9,24 @@ import mysql.connector
 
 from . import video_info
 from .asr_segments import fix_asr_segment_rows
-from .config import MYSQL_CONFIG
+from .config import (
+    DEVICE,
+    MYSQL_CONFIG,
+    WHISPER_ENGINE,
+    WHISPER_MODEL,
+    WHISPERX_ALIGN,
+    WHISPERX_ALIGN_INTERPOLATE_METHOD,
+    WHISPERX_ALIGN_MODEL,
+    WHISPERX_ALIGN_MODEL_DIR,
+    WHISPERX_BATCH_SIZE,
+    WHISPERX_CHUNK_SIZE,
+    WHISPERX_COMPUTE_TYPE,
+    WHISPERX_REGROUP_MAX_CHARS,
+    WHISPERX_REGROUP_MAX_DURATION_MS,
+    WHISPERX_VAD_METHOD,
+    WHISPERX_VAD_OFFSET,
+    WHISPERX_VAD_ONSET,
+)
 from .stages import FAILED, READY, RUNNING, SUCCESS, stage_for
 
 HEARTBEAT_TABLE = "yd_service_heartbeat"
@@ -184,7 +201,343 @@ def ensure_asr_schema() -> None:
         conn.commit()
 
 
-def _word_timestamp_rows(task_id: str, segments: list[dict[str, Any]]) -> list[tuple]:
+def create_whisper_run(
+    *,
+    task_id: str,
+    language: str,
+    source_url: str | None,
+    input_audio_url: str | None,
+    input_local_path: str,
+    input_file_size: int,
+    input_sha256: str,
+) -> int:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO whisper_run
+              (task_id, language, source_url, engine, model, configured_device, input_audio_url,
+               input_local_path, input_file_size, input_sha256, batch_size, chunk_size,
+               compute_type, vad_method, vad_onset, vad_offset, align_enabled,
+               align_model, align_model_dir, align_interpolate_method, regroup_max_chars,
+               regroup_max_duration_ms, status, operator)
+            VALUES
+              (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+               %s, %s, %s, %s, 'running', %s)
+            """,
+            (
+                task_id,
+                language,
+                source_url,
+                WHISPER_ENGINE,
+                WHISPER_MODEL,
+                DEVICE,
+                input_audio_url,
+                input_local_path,
+                input_file_size,
+                input_sha256,
+                WHISPERX_BATCH_SIZE if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_CHUNK_SIZE if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_COMPUTE_TYPE if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_VAD_METHOD if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_VAD_ONSET if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_VAD_OFFSET if WHISPER_ENGINE == "whisperx" else None,
+                1 if WHISPER_ENGINE == "whisperx" and WHISPERX_ALIGN else 0,
+                WHISPERX_ALIGN_MODEL or None,
+                WHISPERX_ALIGN_MODEL_DIR if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_ALIGN_INTERPOLATE_METHOD if WHISPER_ENGINE == "whisperx" else None,
+                WHISPERX_REGROUP_MAX_CHARS,
+                WHISPERX_REGROUP_MAX_DURATION_MS,
+                _operator_value(),
+            ),
+        )
+        run_id = int(cur.lastrowid)
+        conn.commit()
+        return run_id
+
+
+def update_whisper_run_runtime(
+    run_id: int,
+    *,
+    runtime_device: str,
+    model_path: str,
+    input_duration_ms: int | None = None,
+) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE whisper_run
+            SET runtime_device = %s,
+                model_path = %s,
+                input_duration_ms = COALESCE(%s, input_duration_ms)
+            WHERE id = %s
+            """,
+            (runtime_device, model_path, input_duration_ms, run_id),
+        )
+        conn.commit()
+
+
+def finish_whisper_run(run_id: int, status: str, error_message: str | None = None) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            UPDATE whisper_run
+            SET status = %s, error_message = %s, finished_at = NOW()
+            WHERE id = %s
+            """,
+            (status, error_message, run_id),
+        )
+        conn.commit()
+
+
+def _seconds_to_ms(value: Any) -> int:
+    return int(round(float(value or 0) * 1000))
+
+
+def _segment_ms(segment: Mapping[str, Any], key: str) -> int:
+    ms_key = f"{key}_time"
+    if segment.get(ms_key) is not None:
+        return int(segment.get(ms_key) or 0)
+    return _seconds_to_ms(segment.get(key))
+
+
+def _duration_ms(start_time: int, end_time: int) -> int:
+    return max(0, int(end_time) - int(start_time))
+
+
+def _word_global_index(word: Mapping[str, Any]) -> int | None:
+    value = word.get("_whisper_word_global_index")
+    return int(value) if value is not None else None
+
+
+def _segment_word_ids(segment: Mapping[str, Any], word_ids: Mapping[int, int]) -> tuple[int | None, int | None]:
+    indexes = [
+        global_index
+        for word in segment.get("words") or []
+        if (global_index := _word_global_index(word)) is not None and global_index in word_ids
+    ]
+    if not indexes:
+        return None, None
+    return word_ids[min(indexes)], word_ids[max(indexes)]
+
+
+def save_whisper_raw_segments(run_id: int, task_id: str, segments: list[dict[str, Any]]) -> dict[int, int]:
+    ids: dict[int, int] = {}
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whisper_raw_segment WHERE run_id = %s", (run_id,))
+        for index, segment in enumerate(segments):
+            start_time = _segment_ms(segment, "start")
+            end_time = _segment_ms(segment, "end")
+            cur.execute(
+                """
+                INSERT INTO whisper_raw_segment
+                  (run_id, task_id, raw_index, text, start_time, end_time, duration_ms,
+                   seek_offset, temperature, avg_logprob, compression_ratio, no_speech_prob)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    task_id,
+                    index,
+                    str(segment.get("text") or "").strip(),
+                    start_time,
+                    end_time,
+                    _duration_ms(start_time, end_time),
+                    segment.get("seek"),
+                    segment.get("temperature"),
+                    segment.get("avg_logprob"),
+                    segment.get("compression_ratio"),
+                    segment.get("no_speech_prob"),
+                ),
+            )
+            ids[index] = int(cur.lastrowid)
+        conn.commit()
+    return ids
+
+
+def save_whisper_aligned_segments(
+    run_id: int,
+    task_id: str,
+    segments: list[dict[str, Any]],
+    raw_segment_ids: Mapping[int, int] | None = None,
+) -> dict[int, int]:
+    ids: dict[int, int] = {}
+    raw_segment_ids = raw_segment_ids or {}
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whisper_aligned_segment WHERE run_id = %s", (run_id,))
+        for index, segment in enumerate(segments):
+            start_time = _segment_ms(segment, "start")
+            end_time = _segment_ms(segment, "end")
+            cur.execute(
+                """
+                INSERT INTO whisper_aligned_segment
+                  (run_id, task_id, aligned_index, raw_segment_id, text, start_time,
+                   end_time, duration_ms, speaker)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    task_id,
+                    index,
+                    raw_segment_ids.get(index),
+                    str(segment.get("text") or "").strip(),
+                    start_time,
+                    end_time,
+                    _duration_ms(start_time, end_time),
+                    str(segment.get("speaker") or "") or None,
+                ),
+            )
+            ids[index] = int(cur.lastrowid)
+        conn.commit()
+    return ids
+
+
+def save_whisper_aligned_words(
+    run_id: int,
+    task_id: str,
+    segments: list[dict[str, Any]],
+    aligned_segment_ids: Mapping[int, int],
+) -> dict[int, int]:
+    ids: dict[int, int] = {}
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whisper_aligned_word WHERE run_id = %s", (run_id,))
+        for segment_index, segment in enumerate(segments):
+            aligned_segment_id = aligned_segment_ids.get(segment_index)
+            for segment_word_index, word in enumerate(segment.get("words") or []):
+                global_word_index = _word_global_index(word)
+                if global_word_index is None:
+                    continue
+                text = str(word.get("word") or word.get("text") or "").strip()
+                if not text:
+                    continue
+                start_time = _segment_ms(word, "start") if word.get("start") is not None or word.get("start_time") is not None else None
+                end_time = _segment_ms(word, "end") if word.get("end") is not None or word.get("end_time") is not None else None
+                cur.execute(
+                    """
+                    INSERT INTO whisper_aligned_word
+                      (run_id, task_id, aligned_segment_id, global_word_index,
+                       segment_word_index, text, start_time, end_time, duration_ms,
+                       score, speaker)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                    """,
+                    (
+                        run_id,
+                        task_id,
+                        aligned_segment_id,
+                        global_word_index,
+                        segment_word_index,
+                        text[:255],
+                        start_time,
+                        end_time,
+                        _duration_ms(start_time, end_time) if start_time is not None and end_time is not None else None,
+                        word.get("score"),
+                        str(word.get("speaker") or "") or None,
+                    ),
+                )
+                ids[global_word_index] = int(cur.lastrowid)
+        conn.commit()
+    return ids
+
+
+def save_whisper_pysbd_segments(
+    run_id: int,
+    task_id: str,
+    segments: list[dict[str, Any]],
+    word_ids: Mapping[int, int],
+) -> dict[int, int]:
+    ids: dict[int, int] = {}
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whisper_pysbd_segment WHERE run_id = %s", (run_id,))
+        for index, segment in enumerate(segments):
+            start_time = _segment_ms(segment, "start")
+            end_time = _segment_ms(segment, "end")
+            first_word_id, last_word_id = _segment_word_ids(segment, word_ids)
+            cur.execute(
+                """
+                INSERT INTO whisper_pysbd_segment
+                  (run_id, task_id, pysbd_index, aligned_segment_id, text, start_time,
+                   end_time, duration_ms, first_word_id, last_word_id, word_count,
+                   pysbd_language, segmentation_method)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    task_id,
+                    index,
+                    segment.get("_whisper_aligned_segment_id"),
+                    str(segment.get("text") or "").strip(),
+                    start_time,
+                    end_time,
+                    _duration_ms(start_time, end_time),
+                    first_word_id,
+                    last_word_id,
+                    len(segment.get("words") or []),
+                    segment.get("_whisper_pysbd_language"),
+                    segment.get("_whisper_segmentation_method") or "pysbd",
+                ),
+            )
+            ids[index] = int(cur.lastrowid)
+        conn.commit()
+    return ids
+
+
+def save_whisper_long_split_segments(
+    run_id: int,
+    task_id: str,
+    segments: list[dict[str, Any]],
+    pysbd_segment_ids: Mapping[int, int],
+    word_ids: Mapping[int, int],
+) -> dict[int, int]:
+    ids: dict[int, int] = {}
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whisper_long_split_segment WHERE run_id = %s", (run_id,))
+        for index, segment in enumerate(segments):
+            start_time = _segment_ms(segment, "start")
+            end_time = _segment_ms(segment, "end")
+            first_word_id, last_word_id = _segment_word_ids(segment, word_ids)
+            source_index = int(segment.get("_whisper_pysbd_index") or index)
+            cur.execute(
+                """
+                INSERT INTO whisper_long_split_segment
+                  (run_id, task_id, split_index, pysbd_segment_id, text, start_time,
+                   end_time, duration_ms, first_word_id, last_word_id, word_count,
+                   split_applied, split_reason, split_at_word_index, split_punctuation,
+                   max_chars, max_duration_ms)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    run_id,
+                    task_id,
+                    index,
+                    pysbd_segment_ids[source_index],
+                    str(segment.get("text") or "").strip(),
+                    start_time,
+                    end_time,
+                    _duration_ms(start_time, end_time),
+                    first_word_id,
+                    last_word_id,
+                    len(segment.get("words") or []),
+                    1 if segment.get("_whisper_split_applied") else 0,
+                    segment.get("_whisper_split_reason") or "none",
+                    segment.get("_whisper_split_at_word_index"),
+                    segment.get("_whisper_split_punctuation"),
+                    WHISPERX_REGROUP_MAX_CHARS,
+                    WHISPERX_REGROUP_MAX_DURATION_MS,
+                ),
+            )
+            ids[index] = int(cur.lastrowid)
+        conn.commit()
+    return ids
+
+
+def _word_timestamp_rows(task_id: str, segments: list[dict[str, Any]], run_id: int | None = None) -> list[tuple]:
     def time_ms(word: dict[str, Any], ms_key: str, seconds_key: str) -> int:
         if word.get(ms_key) is not None:
             return int(word.get(ms_key) or 0)
@@ -204,14 +557,16 @@ def _word_timestamp_rows(task_id: str, segments: list[dict[str, Any]]) -> list[t
                     text[:255],
                     time_ms(word, "start_time", "start"),
                     time_ms(word, "end_time", "end"),
+                    run_id,
+                    word.get("_whisper_aligned_word_id"),
                 )
             )
     return rows
 
 
-def save_word_timestamps(task_id: str, segments: list[dict[str, Any]]) -> int:
+def save_word_timestamps(task_id: str, segments: list[dict[str, Any]], run_id: int | None = None) -> int:
     ensure_asr_schema()
-    rows = _word_timestamp_rows(task_id, segments)
+    rows = _word_timestamp_rows(task_id, segments, run_id)
     with connect() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM whisper_word_timestamp WHERE task_id = %s", (task_id,))
@@ -219,12 +574,15 @@ def save_word_timestamps(task_id: str, segments: list[dict[str, Any]]) -> int:
             cur.executemany(
                 """
                 INSERT INTO whisper_word_timestamp
-                  (task_id, segment_index, word_index, text, start_time, end_time)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                  (task_id, segment_index, word_index, text, start_time, end_time,
+                   whisper_run_id, whisper_aligned_word_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                   text = VALUES(text),
                   start_time = VALUES(start_time),
-                  end_time = VALUES(end_time)
+                  end_time = VALUES(end_time),
+                  whisper_run_id = VALUES(whisper_run_id),
+                  whisper_aligned_word_id = VALUES(whisper_aligned_word_id)
                 """,
                 rows,
             )
@@ -235,6 +593,7 @@ def save_word_timestamps(task_id: str, segments: list[dict[str, Any]]) -> int:
 def save_asr_segments(
     task_id: str,
     segments: list[dict[str, Any]],
+    run_id: int | None = None,
 ) -> None:
     ensure_asr_schema()
     with connect() as conn:
@@ -244,13 +603,16 @@ def save_asr_segments(
             cur.execute(
                 """
                 INSERT INTO yd_asr_segment
-                  (task_id, item_index, text, start_time, end_time, speaker)
-                VALUES (%s, %s, %s, %s, %s, %s)
+                  (task_id, item_index, text, start_time, end_time, speaker,
+                   whisper_run_id, whisper_long_split_segment_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
                 ON DUPLICATE KEY UPDATE
                   text = VALUES(text),
                   start_time = VALUES(start_time),
                   end_time = VALUES(end_time),
-                  speaker = VALUES(speaker)
+                  speaker = VALUES(speaker),
+                  whisper_run_id = VALUES(whisper_run_id),
+                  whisper_long_split_segment_id = VALUES(whisper_long_split_segment_id)
                 """,
                 (
                     task_id,
@@ -259,19 +621,63 @@ def save_asr_segments(
                     int(item.get("start_time") or 0),
                     int(item.get("end_time") or 0),
                     str(item.get("speaker") or "") or None,
+                    run_id,
+                    item.get("_whisper_long_split_segment_id"),
                 ),
             )
         conn.commit()
 
 
-def save_asr_result(task_id: str, language: str, payload: dict[str, Any]) -> list[dict[str, Any]]:
+def save_asr_result(task_id: str, language: str, payload: dict[str, Any], run_id: int | None = None) -> list[dict[str, Any]]:
     audio_info = payload.get("audio_info") or {}
     result = payload.get("result") or {}
     duration_ms = int(audio_info.get("duration") or 0)
     segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
-    save_asr_segments(task_id, segments)
-    save_word_timestamps(task_id, segments)
+    save_asr_segments(task_id, segments, run_id)
+    save_word_timestamps(task_id, segments, run_id)
+    if run_id is not None:
+        _save_whisper_final_adjustments(run_id, task_id, result.get("utterances") or [], segments)
     return segments
+
+
+def _save_whisper_final_adjustments(
+    run_id: int,
+    task_id: str,
+    source_segments: list[dict[str, Any]],
+    final_segments: list[dict[str, Any]],
+) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM whisper_final_adjustment WHERE run_id = %s", (run_id,))
+        for index, final_segment in enumerate(final_segments):
+            source_segment = source_segments[index] if index < len(source_segments) else final_segment
+            original_start = int(source_segment.get("start_time") or 0)
+            original_end = int(source_segment.get("end_time") or 0)
+            final_start = int(final_segment.get("start_time") or 0)
+            final_end = int(final_segment.get("end_time") or 0)
+            cur.execute(
+                """
+                INSERT INTO whisper_final_adjustment
+                  (run_id, task_id, long_split_segment_id, segment_index,
+                   original_start_time, original_end_time, final_start_time,
+                   final_end_time, start_delta_ms, end_delta_ms, start_pad_ms,
+                   end_pad_ms, min_gap_ms)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, 100, 300, 50)
+                """,
+                (
+                    run_id,
+                    task_id,
+                    source_segment.get("_whisper_long_split_segment_id"),
+                    index,
+                    original_start,
+                    original_end,
+                    final_start,
+                    final_end,
+                    final_start - original_start,
+                    final_end - original_end,
+                ),
+            )
+        conn.commit()
 
 
 def connect():

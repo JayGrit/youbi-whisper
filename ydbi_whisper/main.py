@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+import hashlib
 from pathlib import Path
 
 from ydbi_whisper import db
@@ -17,6 +18,14 @@ log = logging.getLogger(__name__)
 # 单个 ASR 任务允许的最大分段数量
 # 防止 Whisper 产出过多 segment，导致后续字幕翻译、合并、入库等流程压力过大
 MAX_ASR_SEGMENTS = 300
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as file:
+        for chunk in iter(lambda: file.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def _download_destination(session: Path, source_ref: str) -> Path:
@@ -63,6 +72,7 @@ def handle(row: dict) -> dict[str, str]:
     # 获取当前任务的本地工作目录
     # 后续会在这个目录下存放临时音频、metadata 等文件
     session = task_work_dir(task_id)
+    run_id: int | None = None
 
     try:
         # 下载或准备当前任务的人声音频文件
@@ -75,6 +85,15 @@ def handle(row: dict) -> dict[str, str]:
         # 根据任务的 source_url 判断来源
         # source 中一般会包含 asr_language 等配置
         source = detect_source(task["source_url"])
+        run_id = db.create_whisper_run(
+            task_id=task_id,
+            language=source.asr_language,
+            source_url=str(task.get("source_url") or ""),
+            input_audio_url=str(row.get("audio_vocals_url") or ""),
+            input_local_path=str(vocals),
+            input_file_size=vocals.stat().st_size,
+            input_sha256=_sha256(vocals),
+        )
 
         # 打印 Whisper 识别前的关键信息
         log.info(
@@ -86,11 +105,11 @@ def handle(row: dict) -> dict[str, str]:
 
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
-        data = recognize_speech(vocals, session, language=source.asr_language)
+        data = recognize_speech(vocals, session, language=source.asr_language, task_id=task_id, run_id=run_id)
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
-        asr_segments = db.save_asr_result(task_id, source.asr_language, data)
+        asr_segments = db.save_asr_result(task_id, source.asr_language, data, run_id=run_id)
 
         # 如果 Whisper 返回的分段数量过多，则直接中断任务
         # 避免后续处理超出系统设计上限
@@ -108,7 +127,12 @@ def handle(row: dict) -> dict[str, str]:
             len(asr_segments),
             word_count,
         )
+        db.finish_whisper_run(run_id, "success")
 
+    except Exception as exc:
+        if run_id is not None:
+            db.finish_whisper_run(run_id, "failed", str(exc))
+        raise
     finally:
         # 无论识别成功还是失败，都清理当前任务的本地临时工作目录
         # ignore_errors=True 表示清理失败时不再额外抛异常

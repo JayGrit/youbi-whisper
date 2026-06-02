@@ -151,6 +151,9 @@ def normalize_asr_segments(utterances: list[dict]) -> list[dict]:
             # 保留原始 words 字段，通常用于词级时间戳或词级信息
             "words": u.get("words"),
 
+            # whisper 中间产物追踪字段，供最终 ASR 表反查来源
+            "_whisper_long_split_segment_id": u.get("_whisper_long_split_segment_id"),
+
         }
 
         # 遍历每一个原始 ASR 片段
