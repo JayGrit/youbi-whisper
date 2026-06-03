@@ -9,6 +9,7 @@ dependencies = [
   "pydub",
   "pysbd>=0.3.4",
   "whisperx",
+  "wtpsplit>=2.1.6",
 ]
 
 [project.scripts]

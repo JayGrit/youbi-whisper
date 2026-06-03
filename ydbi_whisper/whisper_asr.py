@@ -277,6 +277,127 @@ def _long_split_reason(segment: dict) -> str:
     return "none"
 
 
+_WTPSPLIT_MODEL = None
+_WTPSPLIT_UNAVAILABLE = False
+
+
+def _word_text_length(words: list[dict]) -> int:
+    return len(" ".join(_word_text(word) for word in words if _word_text(word)).strip())
+
+
+def _split_punctuation_value(text: str) -> str | None:
+    match = re.search(r"[,;:，；：]+", text)
+    return match.group(0) if match else None
+
+
+def _minor_punctuation_split_at(words: list[dict]) -> int | None:
+    candidates = [idx + 1 for idx, word in enumerate(words[:-1]) if MINOR_BREAK_RE.search(_word_text(word))]
+    if not candidates:
+        return None
+
+    total_length = _word_text_length(words)
+    midpoint = total_length / 2
+    return min(
+        candidates,
+        key=lambda split_at: (
+            abs(_word_text_length(words[:split_at]) - midpoint),
+            abs(_word_text_length(words[split_at:]) - midpoint),
+        ),
+    )
+
+
+def _wtpsplit_model():
+    global _WTPSPLIT_MODEL, _WTPSPLIT_UNAVAILABLE
+    if _WTPSPLIT_MODEL is not None:
+        return _WTPSPLIT_MODEL
+    if _WTPSPLIT_UNAVAILABLE:
+        return None
+    try:
+        from wtpsplit import WtP
+    except Exception as exc:
+        _WTPSPLIT_UNAVAILABLE = True
+        log.warning("wtpsplit import failed, keep long segment unsplit: %s", exc)
+        return None
+
+    try:
+        _WTPSPLIT_MODEL = WtP("wtp-bert-mini", ignore_legacy_warning=True)
+    except Exception as exc:
+        _WTPSPLIT_UNAVAILABLE = True
+        log.warning("wtpsplit model load failed, keep long segment unsplit: %s", exc)
+        return None
+    return _WTPSPLIT_MODEL
+
+
+def _semantic_split_at(words: list[dict], language: str | None = None) -> int | None:
+    if len(words) <= 1:
+        return None
+
+    model = _wtpsplit_model()
+    if model is None:
+        return None
+
+    text_parts = []
+    word_spans = []
+    cursor = 0
+    for word in words:
+        text = _word_text(word)
+        if not text:
+            continue
+        if text_parts:
+            text_parts.append(" ")
+            cursor += 1
+        start = cursor
+        text_parts.append(text)
+        cursor += len(text)
+        word_spans.append((start, cursor))
+
+    full_text = "".join(text_parts).strip()
+    if not full_text or len(word_spans) <= 1:
+        return None
+
+    lang = _sentence_segmenter_language(language or "en")
+    try:
+        semantic_parts = [part.strip() for part in model.split(full_text, lang_code=lang) if part.strip()]
+    except TypeError:
+        try:
+            semantic_parts = [part.strip() for part in model.split(full_text) if part.strip()]
+        except Exception as exc:
+            log.warning("wtpsplit split failed, keep long segment unsplit: %s", exc)
+            return None
+    except Exception as exc:
+        log.warning("wtpsplit split failed, keep long segment unsplit: %s", exc)
+        return None
+
+    if len(semantic_parts) <= 1:
+        return None
+
+    boundaries = []
+    search_from = 0
+    for part in semantic_parts[:-1]:
+        start = full_text.find(part, search_from)
+        if start < 0:
+            return None
+        end = start + len(part)
+        boundaries.append(end)
+        search_from = end
+
+    split_candidates = []
+    for boundary in boundaries:
+        split_at = None
+        for index, (_, word_end) in enumerate(word_spans):
+            if word_end >= boundary:
+                split_at = index + 1
+                break
+        if split_at is not None and 0 < split_at < len(words):
+            split_candidates.append(split_at)
+
+    if not split_candidates:
+        return None
+
+    midpoint = len(full_text) / 2
+    return min(split_candidates, key=lambda split_at: abs(word_spans[split_at - 1][1] - midpoint))
+
+
 def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | None = None) -> list[dict]:
     if not _segment_too_long(segment):
         return [{
@@ -298,6 +419,8 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
     split_segments = []
     current_words = []
     split_reason = _long_split_reason(segment)
+    original_text = str(segment.get("text") or "").strip()
+    language = segment.get("_whisper_pysbd_language")
 
     def append_group(
         group_words: list[dict],
@@ -305,14 +428,18 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
         split_applied: bool,
         split_at_word_index: int | None = None,
         split_punctuation: str | None = None,
+        split_method: str | None = None,
     ) -> None:
         grouped = _segment_from_words(group_words)
         if grouped is not None:
             grouped["_whisper_pysbd_index"] = pysbd_index
             grouped["_whisper_split_applied"] = split_applied
             grouped["_whisper_split_reason"] = split_reason
+            grouped["_whisper_split_trigger"] = split_reason
+            grouped["_whisper_split_method"] = split_method or ("none" if not split_applied else "unknown")
             grouped["_whisper_split_at_word_index"] = split_at_word_index
             grouped["_whisper_split_punctuation"] = split_punctuation
+            grouped["_whisper_original_text"] = original_text
             split_segments.append(grouped)
 
     def flush_current() -> None:
@@ -329,14 +456,12 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
         if current_segment is None or not _segment_too_long(current_segment):
             continue
 
-        split_at = None
-        for idx in range(len(current_words) - 2, -1, -1):
-            if MINOR_BREAK_RE.search(_word_text(current_words[idx])):
-                split_at = idx + 1
-                break
+        split_at = _minor_punctuation_split_at(current_words)
+        split_method = "minor_punctuation" if split_at is not None else None
 
-        if split_at is None and len(current_words) > 1:
-            split_at = len(current_words) - 1
+        if split_at is None:
+            split_at = _semantic_split_at(current_words, language)
+            split_method = "semantic_wtpsplit" if split_at is not None else None
 
         if split_at:
             split_word = current_words[split_at - 1]
@@ -344,16 +469,39 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
                 current_words[:split_at],
                 split_applied=True,
                 split_at_word_index=split_at - 1,
-                split_punctuation=_word_text(split_word)[-1:] or None,
+                split_punctuation=_split_punctuation_value(_word_text(split_word)),
+                split_method=split_method,
             )
             current_words = current_words[split_at:]
 
     flush_current()
+    if split_segments:
+        last_method = None
+        last_punctuation = None
+        for grouped in split_segments:
+            if grouped.get("_whisper_split_method") not in {None, "unknown", "none"}:
+                last_method = grouped.get("_whisper_split_method")
+            elif last_method is not None:
+                grouped["_whisper_split_method"] = last_method
+            if grouped.get("_whisper_split_punctuation"):
+                last_punctuation = grouped.get("_whisper_split_punctuation")
+            elif last_punctuation is not None and grouped.get("_whisper_split_method") == "minor_punctuation":
+                grouped["_whisper_split_punctuation"] = last_punctuation
+
+        source_part_index = 1
+        source_part_count = len(split_segments)
+        for grouped in split_segments:
+            grouped["_whisper_original_part_index"] = source_part_index
+            grouped["_whisper_original_part_count"] = source_part_count
+            source_part_index += 1
     return split_segments or [{
         **segment,
         "_whisper_pysbd_index": pysbd_index,
         "_whisper_split_applied": False,
         "_whisper_split_reason": split_reason,
+        "_whisper_split_trigger": split_reason,
+        "_whisper_split_method": "none",
+        "_whisper_original_text": original_text,
     }]
 
 

@@ -499,6 +499,17 @@ def save_whisper_splits(
     ids: dict[int, int] = {}
     with connect() as conn:
         cur = conn.cursor()
+        _ensure_columns(
+            cur,
+            "whisper_split",
+            {
+                "split_trigger": "VARCHAR(64) NULL",
+                "split_method": "VARCHAR(64) NULL",
+                "original_text": "MEDIUMTEXT NULL",
+                "original_part_index": "INT NULL",
+                "original_part_count": "INT NULL",
+            },
+        )
         cur.execute("DELETE FROM whisper_split WHERE run_id = %s", (run_id,))
         for index, segment in enumerate(segments):
             if not segment.get("_whisper_split_applied"):
@@ -514,8 +525,10 @@ def save_whisper_splits(
                   (run_id, task_id, split_index, pysbd_segment_id, text, start_time,
                    end_time, duration_ms, first_word_id, last_word_id, word_count,
                    split_reason, split_at_word_index, split_punctuation, max_chars,
-                   max_duration_ms)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   max_duration_ms, split_trigger, split_method, original_text,
+                   original_part_index, original_part_count)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s, %s)
                 """,
                 (
                     run_id,
@@ -534,6 +547,11 @@ def save_whisper_splits(
                     segment.get("_whisper_split_punctuation"),
                     WHISPERX_REGROUP_MAX_CHARS,
                     WHISPERX_REGROUP_MAX_DURATION_MS,
+                    segment.get("_whisper_split_trigger") or segment.get("_whisper_split_reason") or "none",
+                    segment.get("_whisper_split_method") or "unknown",
+                    segment.get("_whisper_original_text"),
+                    segment.get("_whisper_original_part_index"),
+                    segment.get("_whisper_original_part_count"),
                 ),
             )
             ids[index] = int(cur.lastrowid)
