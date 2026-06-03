@@ -36,6 +36,18 @@ _MODEL = None
 log = logging.getLogger(__name__)
 SENTENCE_END_RE = re.compile(r"[.!?。！？]+[\"')\]}]*$")
 MINOR_BREAK_RE = re.compile(r"[,;:，；：]+[\"')\]}]*$")
+WEAK_CONJUNCTIONS = {
+    "and",
+    "but",
+    "or",
+    "so",
+    "yet",
+    "because",
+    "although",
+    "though",
+    "while",
+    "whereas",
+}
 
 
 def _word_timestamps_for(runtime_device: str) -> bool:
@@ -290,8 +302,32 @@ def _split_punctuation_value(text: str) -> str | None:
     return match.group(0) if match else None
 
 
+def _normalized_word_text(text: str) -> str:
+    return re.sub(r"^[^\w]+|[^\w]+$", "", text.lower())
+
+
 def _minor_punctuation_split_at(words: list[dict]) -> int | None:
     candidates = [idx + 1 for idx, word in enumerate(words[:-1]) if MINOR_BREAK_RE.search(_word_text(word))]
+    if not candidates:
+        return None
+
+    total_length = _word_text_length(words)
+    midpoint = total_length / 2
+    return min(
+        candidates,
+        key=lambda split_at: (
+            abs(_word_text_length(words[:split_at]) - midpoint),
+            abs(_word_text_length(words[split_at:]) - midpoint),
+        ),
+    )
+
+
+def _weak_conjunction_split_at(words: list[dict]) -> int | None:
+    candidates = [
+        idx
+        for idx, word in enumerate(words[1:-1], start=1)
+        if _normalized_word_text(_word_text(word)) in WEAK_CONJUNCTIONS
+    ]
     if not candidates:
         return None
 
@@ -428,6 +464,7 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
         split_applied: bool,
         split_at_word_index: int | None = None,
         split_punctuation: str | None = None,
+        split_conjunction: str | None = None,
         split_method: str | None = None,
     ) -> None:
         grouped = _segment_from_words(group_words)
@@ -439,6 +476,7 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
             grouped["_whisper_split_method"] = split_method or ("none" if not split_applied else "unknown")
             grouped["_whisper_split_at_word_index"] = split_at_word_index
             grouped["_whisper_split_punctuation"] = split_punctuation
+            grouped["_whisper_split_conjunction"] = split_conjunction
             grouped["_whisper_original_text"] = original_text
             split_segments.append(grouped)
 
@@ -458,6 +496,12 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
 
         split_at = _minor_punctuation_split_at(current_words)
         split_method = "minor_punctuation" if split_at is not None else None
+        split_conjunction = None
+
+        if split_at is None:
+            split_at = _weak_conjunction_split_at(current_words)
+            split_method = "weak_conjunction" if split_at is not None else None
+            split_conjunction = _normalized_word_text(_word_text(current_words[split_at])) if split_at is not None else None
 
         if split_at is None:
             split_at = _semantic_split_at(current_words, language)
@@ -470,6 +514,7 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
                 split_applied=True,
                 split_at_word_index=split_at - 1,
                 split_punctuation=_split_punctuation_value(_word_text(split_word)),
+                split_conjunction=split_conjunction,
                 split_method=split_method,
             )
             current_words = current_words[split_at:]
@@ -478,6 +523,7 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
     if split_segments:
         last_method = None
         last_punctuation = None
+        last_conjunction = None
         for grouped in split_segments:
             if grouped.get("_whisper_split_method") not in {None, "unknown", "none"}:
                 last_method = grouped.get("_whisper_split_method")
@@ -487,6 +533,10 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
                 last_punctuation = grouped.get("_whisper_split_punctuation")
             elif last_punctuation is not None and grouped.get("_whisper_split_method") == "minor_punctuation":
                 grouped["_whisper_split_punctuation"] = last_punctuation
+            if grouped.get("_whisper_split_conjunction"):
+                last_conjunction = grouped.get("_whisper_split_conjunction")
+            elif last_conjunction is not None and grouped.get("_whisper_split_method") == "weak_conjunction":
+                grouped["_whisper_split_conjunction"] = last_conjunction
 
         source_part_index = 1
         source_part_count = len(split_segments)
