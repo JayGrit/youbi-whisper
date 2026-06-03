@@ -349,19 +349,57 @@ def _wtpsplit_model():
     if _WTPSPLIT_UNAVAILABLE:
         return None
     try:
-        from wtpsplit import WtP
+        from wtpsplit import SaT
     except Exception as exc:
-        _WTPSPLIT_UNAVAILABLE = True
-        log.warning("wtpsplit import failed, keep long segment unsplit: %s", exc)
-        return None
+        try:
+            from wtpsplit import WtP
+        except Exception as fallback_exc:
+            _WTPSPLIT_UNAVAILABLE = True
+            log.warning("wtpsplit import failed, keep long segment unsplit: %s", fallback_exc)
+            return None
+
+        try:
+            _WTPSPLIT_MODEL = WtP("wtp-bert-mini", ignore_legacy_warning=True)
+        except Exception as fallback_exc:
+            _WTPSPLIT_UNAVAILABLE = True
+            log.warning("wtpsplit WtP model load failed, keep long segment unsplit: %s", fallback_exc)
+            return None
+        return _WTPSPLIT_MODEL
 
     try:
-        _WTPSPLIT_MODEL = WtP("wtp-bert-mini", ignore_legacy_warning=True)
+        _WTPSPLIT_MODEL = SaT("sat-3l-sm")
     except Exception as exc:
         _WTPSPLIT_UNAVAILABLE = True
-        log.warning("wtpsplit model load failed, keep long segment unsplit: %s", exc)
+        log.warning("wtpsplit SaT model load failed, keep long segment unsplit: %s", exc)
         return None
     return _WTPSPLIT_MODEL
+
+
+def _semantic_parts(model: object, full_text: str, lang: str) -> list[str]:
+    try:
+        return [
+            part.strip()
+            for part in model.split(
+                full_text,
+                max_length=WHISPERX_REGROUP_MAX_CHARS,
+                prior_type="gaussian",
+                prior_kwargs={"lang_code": lang},
+            )
+            if part.strip()
+        ]
+    except TypeError:
+        try:
+            return [
+                part.strip()
+                for part in model.split(
+                    full_text,
+                    lang_code=lang,
+                    max_length=WHISPERX_REGROUP_MAX_CHARS,
+                )
+                if part.strip()
+            ]
+        except TypeError:
+            return [part.strip() for part in model.split(full_text, lang_code=lang) if part.strip()]
 
 
 def _semantic_split_at(words: list[dict], language: str | None = None) -> int | None:
@@ -393,13 +431,7 @@ def _semantic_split_at(words: list[dict], language: str | None = None) -> int | 
 
     lang = _sentence_segmenter_language(language or "en")
     try:
-        semantic_parts = [part.strip() for part in model.split(full_text, lang_code=lang) if part.strip()]
-    except TypeError:
-        try:
-            semantic_parts = [part.strip() for part in model.split(full_text) if part.strip()]
-        except Exception as exc:
-            log.warning("wtpsplit split failed, keep long segment unsplit: %s", exc)
-            return None
+        semantic_parts = _semantic_parts(model, full_text, lang)
     except Exception as exc:
         log.warning("wtpsplit split failed, keep long segment unsplit: %s", exc)
         return None
