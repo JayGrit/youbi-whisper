@@ -12,6 +12,7 @@ TABLE = "yd_video_info"
 COLUMNS: dict[str, str] = {
     "source_url": "TEXT",
     "source_platform": "VARCHAR(32)",
+    "need_separation": "TINYINT(1)",
     "title": "VARCHAR(512)",
     "session_path": "TEXT",
     "metadata_path": "TEXT",
@@ -57,6 +58,7 @@ def _ensure_schema_with_cursor(cur) -> None:
           task_id VARCHAR(64) NOT NULL PRIMARY KEY,
           source_url TEXT,
           source_platform VARCHAR(32),
+          need_separation TINYINT(1),
           title VARCHAR(512),
           session_path TEXT,
           metadata_path TEXT,

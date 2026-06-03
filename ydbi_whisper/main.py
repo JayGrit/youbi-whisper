@@ -38,6 +38,14 @@ def _download_destination(session: Path, source_ref: str) -> Path:
     return session / "media" / f"audio_vocals{suffix}"
 
 
+def _is_false(value) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() in {"0", "false", "no", "off"}
+    return value is False or value == 0
+
+
 def _vocals_input_for(row: dict, session: Path) -> Path:
     # 从任务行中取出 task_id
     task_id = row["task_id"]
@@ -45,24 +53,30 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     # 从任务行中取出人声音频的远程地址
     # 这里一般是 MinIO 或其他对象存储中的 audio_vocals_url
     audio_vocals_url = str(row.get("audio_vocals_url") or "").strip()
+    input_url = audio_vocals_url
+    input_label = "vocals"
+    if not input_url and _is_false(row.get("need_separation")):
+        input_url = str(row.get("audio_source_url") or "").strip()
+        input_label = "source audio"
 
     # 如果没有人声音频地址，说明上游 demucs 或下载阶段没有正确产出 vocals
-    if not audio_vocals_url:
+    if not input_url:
         raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
 
     # 计算本地下载目标路径
-    destination = _download_destination(session, audio_vocals_url)
+    destination = _download_destination(session, input_url)
 
     # 打印下载日志，方便排查当前任务下载的来源和目标路径
     log.info(
-        "whisper task=%s downloading vocals from minio url=%s destination=%s",
+        "whisper task=%s downloading %s from minio url=%s destination=%s",
         task_id,
-        audio_vocals_url,
+        input_label,
+        input_url,
         destination,
     )
 
     # 将远程人声音频下载到本地 session 工作目录，并返回本地文件路径
-    return download(audio_vocals_url, destination)
+    return download(input_url, destination)
 
 
 def handle(row: dict) -> dict[str, str]:
@@ -89,7 +103,7 @@ def handle(row: dict) -> dict[str, str]:
             task_id=task_id,
             language=source.asr_language,
             source_url=str(task.get("source_url") or ""),
-            input_audio_url=str(row.get("audio_vocals_url") or ""),
+            input_audio_url=str(row.get("audio_vocals_url") or row.get("audio_source_url") or ""),
             input_local_path=str(vocals),
             input_file_size=vocals.stat().st_size,
             input_sha256=_sha256(vocals),
