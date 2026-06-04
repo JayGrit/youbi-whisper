@@ -44,164 +44,31 @@ def _row_value(row: Any, index: int = 0) -> Any:
 
 
 def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = %s
-        """,
-        (table,),
-    )
-    existing = {_row_value(row) for row in cur.fetchall()}
-    for name, definition in columns.items():
-        if name not in existing:
-            cur.execute(f"ALTER TABLE {table} ADD COLUMN {name} {definition}")
-
+    return
 
 def _table_columns(cur, table: str) -> set[str]:
-    cur.execute(
-        """
-        SELECT column_name
-        FROM information_schema.columns
-        WHERE table_schema = DATABASE() AND table_name = %s
-        """,
-        (table,),
-    )
-    return {_row_value(row) for row in cur.fetchall()}
-
+    return set()
 
 def _table_exists(cur, table: str) -> bool:
-    cur.execute(
-        """
-        SELECT COUNT(*)
-        FROM information_schema.tables
-        WHERE table_schema = DATABASE() AND table_name = %s
-        """,
-        (table,),
-    )
-    return int(_row_value(cur.fetchone()) or 0) > 0
-
+    return False
 
 def _table_indexes(cur, table: str) -> set[str]:
-    cur.execute(
-        """
-        SELECT DISTINCT index_name
-        FROM information_schema.statistics
-        WHERE table_schema = DATABASE() AND table_name = %s
-        """,
-        (table,),
-    )
-    return {_row_value(row) for row in cur.fetchall()}
-
+    return set()
 
 def _drop_index_if_exists(cur, table: str, index_name: str) -> None:
-    if index_name in _table_indexes(cur, table):
-        cur.execute(f"ALTER TABLE {table} DROP INDEX {index_name}")
-
+    return
 
 def _drop_column_if_exists(cur, table: str, column_name: str) -> None:
-    if column_name in _table_columns(cur, table):
-        cur.execute(f"ALTER TABLE {table} DROP COLUMN {column_name}")
-
+    return
 
 def _drop_table_if_exists(cur, table: str) -> None:
-    if _table_exists(cur, table):
-        cur.execute(f"DROP TABLE {table}")
-
+    return
 
 def _migrate_asr_schema(cur) -> None:
-    if "segment_type" in _table_columns(cur, "yd_asr_segment"):
-        cur.execute(
-            """
-            DELETE old_segment
-            FROM yd_asr_segment old_segment
-            JOIN yd_asr_segment fixed_segment
-              ON fixed_segment.task_id = old_segment.task_id
-             AND fixed_segment.item_index = old_segment.item_index
-             AND fixed_segment.segment_type = 'fixed'
-            WHERE old_segment.segment_type <> 'fixed'
-            """
-        )
-        cur.execute(
-            """
-            DELETE duplicate_segment
-            FROM yd_asr_segment duplicate_segment
-            JOIN yd_asr_segment keep_segment
-              ON keep_segment.task_id = duplicate_segment.task_id
-             AND keep_segment.item_index = duplicate_segment.item_index
-             AND keep_segment.id < duplicate_segment.id
-            """
-        )
-    _drop_index_if_exists(cur, "yd_asr_segment", "uk_asr_segment")
-    _drop_index_if_exists(cur, "yd_asr_segment", "idx_asr_segment_task")
-    _drop_column_if_exists(cur, "yd_asr_segment", "segment_type")
-    _drop_column_if_exists(cur, "yd_asr_segment", "words_json")
-    if "uk_asr_segment" not in _table_indexes(cur, "yd_asr_segment"):
-        cur.execute("ALTER TABLE yd_asr_segment ADD UNIQUE KEY uk_asr_segment (task_id, item_index)")
-    if "idx_asr_segment_task" not in _table_indexes(cur, "yd_asr_segment"):
-        cur.execute("ALTER TABLE yd_asr_segment ADD KEY idx_asr_segment_task (task_id, item_index)")
-
-    if "segment_type" in _table_columns(cur, "whisper_word_timestamp"):
-        cur.execute("DELETE FROM whisper_word_timestamp WHERE segment_type <> 'raw'")
-    _drop_index_if_exists(cur, "whisper_word_timestamp", "uk_whisper_word")
-    _drop_index_if_exists(cur, "whisper_word_timestamp", "idx_whisper_word_task")
-    _drop_column_if_exists(cur, "whisper_word_timestamp", "segment_type")
-    if "uk_whisper_word" not in _table_indexes(cur, "whisper_word_timestamp"):
-        cur.execute("ALTER TABLE whisper_word_timestamp ADD UNIQUE KEY uk_whisper_word (task_id, segment_index, word_index)")
-    if "idx_whisper_word_task" not in _table_indexes(cur, "whisper_word_timestamp"):
-        cur.execute("ALTER TABLE whisper_word_timestamp ADD KEY idx_whisper_word_task (task_id, start_time, end_time)")
-
+    return
 
 def ensure_asr_schema() -> None:
-    with connect() as conn:
-        cur = conn.cursor()
-        _drop_table_if_exists(cur, "yd_asr_result")
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS yd_asr_segment (
-              id BIGINT PRIMARY KEY AUTO_INCREMENT,
-              task_id VARCHAR(64) NOT NULL,
-              item_index INT NOT NULL,
-              text MEDIUMTEXT NOT NULL,
-              start_time INT NOT NULL,
-              end_time INT NOT NULL,
-              speaker VARCHAR(64),
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uk_asr_segment (task_id, item_index),
-              KEY idx_asr_segment_task (task_id, item_index)
-            )
-            """
-        )
-        cur.execute(
-            """
-            CREATE TABLE IF NOT EXISTS whisper_word_timestamp (
-              id BIGINT PRIMARY KEY AUTO_INCREMENT,
-              task_id VARCHAR(64) NOT NULL,
-              segment_index INT NOT NULL,
-              word_index INT NOT NULL,
-              text VARCHAR(255) NOT NULL,
-              start_time INT NOT NULL,
-              end_time INT NOT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uk_whisper_word (task_id, segment_index, word_index),
-              KEY idx_whisper_word_task (task_id, start_time, end_time)
-            )
-            """
-        )
-        _ensure_columns(
-            cur,
-            "yd_asr_segment",
-            {
-                "speaker": "VARCHAR(64)",
-                "whisper_run_id": "BIGINT NULL",
-                "whisper_split_id": "BIGINT NULL",
-            },
-        )
-        _migrate_asr_schema(cur)
-        conn.commit()
-
+    return
 
 def create_whisper_run(
     *,
@@ -689,75 +556,11 @@ def current_operator() -> str:
 
 
 def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
-    for table in tables:
-        cur.execute(
-            """
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.TABLES
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-            """,
-            (table,),
-        )
-        if _row_value(cur.fetchone()) == 0:
-            continue
-
-        cur.execute(
-            """
-            SELECT COUNT(*)
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s AND COLUMN_NAME = %s
-            """,
-            (table, OPERATOR_COLUMN),
-        )
-        if _row_value(cur.fetchone()) > 0:
-            continue
-
-        try:
-            cur.execute(
-                f"ALTER TABLE {_quote_identifier(table)} "
-                f"ADD COLUMN {_quote_identifier(OPERATOR_COLUMN)} {OPERATOR_COLUMN_DEFINITION}"
-            )
-        except mysql.connector.Error as exc:
-            if getattr(exc, "errno", None) != 1060:
-                raise
+    return
 
 
 def ensure_service_heartbeat_schema() -> None:
     global _heartbeat_schema_ready
-    if _heartbeat_schema_ready:
-        return
-
-    columns_sql = ",\n                ".join(
-        f"{_quote_identifier(column)} DATETIME NULL" for column in HEARTBEAT_DEVICE_COLUMNS
-    )
-    with connect() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {HEARTBEAT_TABLE} (
-                service_name VARCHAR(64) NOT NULL PRIMARY KEY,
-                {columns_sql},
-                updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP
-            )
-            """
-        )
-        cur.execute(
-            """
-            SELECT COLUMN_NAME
-            FROM INFORMATION_SCHEMA.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = %s
-            """,
-            (HEARTBEAT_TABLE,),
-        )
-        existing = {_row_value(row) for row in cur.fetchall()}
-        for column in HEARTBEAT_DEVICE_COLUMNS:
-            if column not in existing:
-                try:
-                    cur.execute(f"ALTER TABLE {HEARTBEAT_TABLE} ADD COLUMN {_quote_identifier(column)} DATETIME NULL")
-                except mysql.connector.Error as exc:
-                    if getattr(exc, "errno", None) != 1060:
-                        raise
-        conn.commit()
     _heartbeat_schema_ready = True
 
 
