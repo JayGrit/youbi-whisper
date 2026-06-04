@@ -14,6 +14,7 @@ from .config import (
     MYSQL_CONFIG,
     WHISPER_ENGINE,
     WHISPER_MODEL,
+    WHISPER_RUNTIME_DEVICE,
     WHISPERX_ALIGN,
     WHISPERX_ALIGN_INTERPOLATE_METHOD,
     WHISPERX_ALIGN_MODEL,
@@ -100,7 +101,7 @@ def create_whisper_run(
                 source_url,
                 WHISPER_ENGINE,
                 WHISPER_MODEL,
-                DEVICE,
+                WHISPER_RUNTIME_DEVICE,
                 input_audio_url,
                 input_local_path,
                 input_file_size,
@@ -543,12 +544,11 @@ def _quote_identifier(identifier: str) -> str:
 
 
 def _heartbeat_device_column() -> str | None:
-    device = os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
-    return device if device in HEARTBEAT_DEVICE_COLUMNS else None
+    return DEVICE if DEVICE in HEARTBEAT_DEVICE_COLUMNS else None
 
 
 def _operator_value() -> str:
-    return os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
+    return DEVICE
 
 
 def current_operator() -> str:

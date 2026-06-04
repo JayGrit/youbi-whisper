@@ -20,9 +20,9 @@ MYSQL_CONFIG = {
     "database": "youbi",
 }
 
-WORK_ROOT = Path(tempfile.gettempdir()) / "ydbi"
+WORK_ROOT = Path(os.environ.get("YDBI_WORK_ROOT", Path(tempfile.gettempdir()) / "ydbi")).expanduser()
 WORKFOLDER = WORK_ROOT
-WORK_DIR = WORK_ROOT / "whisper"
+WORK_DIR = Path(os.environ.get("YDBI_WHISPER_WORK_DIR", WORK_ROOT / "whisper")).expanduser()
 POLL_INTERVAL_SECONDS = 10
 SERVICE_ROOT = Path(__file__).resolve().parents[1]
 MODEL_ROOT = Path(os.environ.get("YDBI_WHISPER_MODEL_ROOT", SERVICE_ROOT / "models")).expanduser()
@@ -30,6 +30,12 @@ TORCH_HOME = Path(os.environ.get("TORCH_HOME", MODEL_ROOT / "torch")).expanduser
 os.environ.setdefault("TORCH_HOME", str(TORCH_HOME))
 NLTK_DATA = Path(os.environ.get("NLTK_DATA", MODEL_ROOT / "nltk")).expanduser()
 os.environ.setdefault("NLTK_DATA", str(NLTK_DATA))
+HF_HOME = Path(os.environ.get("HF_HOME", MODEL_ROOT / "huggingface")).expanduser()
+os.environ.setdefault("HF_HOME", str(HF_HOME))
+os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_HOME / "hub"))
+os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_HOME / "transformers"))
+XDG_CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME", MODEL_ROOT / "cache")).expanduser()
+os.environ.setdefault("XDG_CACHE_HOME", str(XDG_CACHE_HOME))
 
 COOKIE_DIR = Path("/Users/hoshuuch/Money/YouBi/data/cookies").expanduser()
 
@@ -42,7 +48,8 @@ MINIO_PUBLIC_BASE = "/minio"
 MINIO_FULL_BASE_URL = "https://120.53.92.66/minio"
 MINIO_SECURE = False
 
-DEVICE = "auto"
+DEVICE = os.environ.get("DEVICE", "").strip() or "Macbook Air M4"
+WHISPER_RUNTIME_DEVICE = os.environ.get("YDBI_WHISPER_RUNTIME_DEVICE", "auto").strip() or "auto"
 WHISPER_MODEL = "large-v3-turbo"
 WHISPER_DOWNLOAD_ROOT = os.environ.get("YDBI_WHISPER_DOWNLOAD_ROOT", str(MODEL_ROOT / "openai-whisper"))
 WHISPER_ENGINE = os.environ.get("YDBI_WHISPER_ENGINE", "whisperx").strip().lower()
@@ -64,8 +71,8 @@ TEST_API_PORT = int(os.environ.get("YDBI_WHISPER_TEST_API_PORT", "8213"))
 
 
 def device() -> str:
-    if DEVICE.lower() != "auto":
-        return DEVICE
+    if WHISPER_RUNTIME_DEVICE.lower() != "auto":
+        return WHISPER_RUNTIME_DEVICE
 
     try:
         import torch
