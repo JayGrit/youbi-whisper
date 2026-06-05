@@ -17,6 +17,9 @@ ydbi-whisper = "ydbi_whisper.main:main"
 ydbi-whisper-api = "ydbi_whisper.api:main"
 ydbi-whisper-test = "ydbi_whisper.local_test:main"
 
+[tool.setuptools]
+packages = ["ydbi_whisper"]
+
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
