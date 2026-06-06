@@ -15,11 +15,6 @@ from ydbi_whisper.worker import run_polling_worker
 # 当前模块的 logger，用于输出 whisper 阶段的运行日志
 log = logging.getLogger(__name__)
 
-# 单个 ASR 任务允许的最大分段数量
-# 防止 Whisper 产出过多 segment，导致后续字幕翻译、合并、入库等流程压力过大
-MAX_ASR_SEGMENTS = 300
-
-
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -124,11 +119,6 @@ def handle(row: dict) -> dict[str, str]:
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
         asr_segments = db.save_asr_result(task_id, source.asr_language, data, run_id=run_id)
-
-        # 如果 Whisper 返回的分段数量过多，则直接中断任务
-        # 避免后续处理超出系统设计上限
-        if len(asr_segments) > MAX_ASR_SEGMENTS:
-            raise ValueError(f"Whisper produced {len(asr_segments)} segments, exceeding the {MAX_ASR_SEGMENTS} limit.")
 
         # 统计所有 ASR segment 中的词级时间戳数量
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
