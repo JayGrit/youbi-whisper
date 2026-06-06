@@ -8,6 +8,7 @@ dependencies = [
   "openai-whisper",
   "pydub",
   "pysbd>=0.3.4",
+  "torchvision>=0.23.0",
   "whisperx",
   "wtpsplit>=2.1.6",
 ]
