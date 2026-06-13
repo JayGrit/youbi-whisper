@@ -699,7 +699,11 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         task = cur.fetchone()
         if not task:
             return None
-        task["video_info"] = video_info.get(task_id)
+        info = video_info.get(task_id) or {}
+        task["video_info"] = info
+        for key, value in info.items():
+            if value is not None:
+                task[key] = value
         return task
 
 

@@ -93,11 +93,14 @@ def handle(row: dict) -> dict[str, str]:
 
         # 根据任务的 source_url 判断来源
         # source 中一般会包含 asr_language 等配置
-        source = detect_source(task["source_url"])
+        source_url = str(task.get("source_url") or "").strip()
+        if not source_url:
+            raise ValueError(f"source_url is missing for task: {task_id}")
+        source = detect_source(source_url)
         run_id = db.create_whisper_run(
             task_id=task_id,
             language=source.asr_language,
-            source_url=str(task.get("source_url") or ""),
+            source_url=source_url,
             input_audio_url=str(row.get("audio_vocals_url") or row.get("audio_source_url") or ""),
             input_local_path=str(vocals),
             input_file_size=vocals.stat().st_size,

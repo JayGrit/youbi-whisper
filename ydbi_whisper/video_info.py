@@ -15,6 +15,8 @@ COLUMNS: dict[str, str] = {
     "need_separation": "TINYINT(1)",
     "metadata_url": "TEXT",
     "video_source_url": "TEXT",
+    "audio_source_path": "TEXT",
+    "audio_source_url": "TEXT",
     "audio_vocals_path": "TEXT",
     "audio_vocals_url": "TEXT",
     "audio_bgm_path": "TEXT",
