@@ -7,7 +7,7 @@ model loading and ASR language selection.
 
 ## Input Table
 
-`yd_whisper`
+`whisper`
 
 Required fields:
 
@@ -19,7 +19,7 @@ Required fields:
 
 - `asr_json_path`
 
-It copies `asr_json_path` into `yd_translator.asr_json_path`.
+It copies `asr_json_path` into `translator.asr_json_path`.
 
 ## Polling
 

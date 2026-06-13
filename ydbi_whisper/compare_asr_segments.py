@@ -17,7 +17,7 @@ def _load_db_segments(task_id: str) -> list[str]:
         cur.execute(
             """
             SELECT text
-            FROM yd_asr_segment
+            FROM asr_segment
             WHERE task_id = %s
             ORDER BY item_index
             """,

@@ -143,8 +143,8 @@ def handle(row: dict) -> dict[str, str]:
         shutil.rmtree(session, ignore_errors=True)
 
     # ASR 结果在数据库中的引用地址
-    # 这里不是实际文件路径，而是一个逻辑引用，表示从 yd_asr_segment 表读取该任务分段
-    asr_ref = f"db://yd_asr_segment/{task_id}"
+    # 这里不是实际文件路径，而是一个逻辑引用，表示从 asr_segment 表读取该任务分段
+    asr_ref = f"db://asr_segment/{task_id}"
 
     # 打印当前 whisper 阶段最终产物引用
     log.info("whisper output task=%s asr_ref=%s", task_id, asr_ref)
