@@ -4,12 +4,13 @@ import logging
 import shutil
 import hashlib
 from pathlib import Path
+from typing import Any
 
 from ydbi_whisper import db
 from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
-from ydbi_whisper.whisper_asr import recognize_speech
+from ydbi_whisper.whisper_asr import NoSpeechDetected, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
 # 当前模块的 logger，用于输出 whisper 阶段的运行日志
@@ -74,7 +75,7 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     return download(input_url, destination)
 
 
-def handle(row: dict) -> dict[str, str]:
+def handle(row: dict) -> dict[str, Any]:
     # 当前 whisper 阶段处理的任务 ID
     task_id = row["task_id"]
 
@@ -117,7 +118,25 @@ def handle(row: dict) -> dict[str, str]:
 
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
-        data = recognize_speech(vocals, session, language=source.asr_language, task_id=task_id, run_id=run_id)
+        try:
+            data = recognize_speech(
+                vocals,
+                session,
+                language=source.asr_language,
+                task_id=task_id,
+                run_id=run_id,
+            )
+        except NoSpeechDetected as exc:
+            log.warning(
+                "whisper task=%s has no active speech; skipping subtitle pipeline: %s",
+                task_id,
+                exc,
+            )
+            db.finish_whisper_run(run_id, "success")
+            return {
+                "need_subtitle": 0,
+                "need_dubbing": 0,
+            }
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等

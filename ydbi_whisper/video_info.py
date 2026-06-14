@@ -12,6 +12,8 @@ TABLE = "video_info"
 COLUMNS: dict[str, str] = {
     "source_url": "TEXT",
     "submitter_video_id": "BIGINT UNSIGNED",
+    "need_subtitle": "TINYINT(1)",
+    "need_dubbing": "TINYINT(1)",
     "need_separation": "TINYINT(1)",
     "metadata_url": "TEXT",
     "video_source_url": "TEXT",

@@ -37,6 +37,25 @@ _MODEL = None
 log = logging.getLogger(__name__)
 SENTENCE_END_RE = re.compile(r"[.!?。！？]+[\"')\]}]*$")
 MINOR_BREAK_RE = re.compile(r"[,;:，；：]+[\"')\]}]*$")
+
+
+class NoSpeechDetected(RuntimeError):
+    """Raised when VAD finds no speech that can be transcribed."""
+
+
+def _is_empty_whisperx_batch_error(exc: IndexError) -> bool:
+    traceback = exc.__traceback__
+    while traceback is not None:
+        frame = traceback.tb_frame
+        if (
+            frame.f_code.co_name == "__call__"
+            and frame.f_code.co_filename.endswith("transformers/pipelines/base.py")
+        ):
+            return str(exc) == "list index out of range"
+        traceback = traceback.tb_next
+    return False
+
+
 WEAK_CONJUNCTIONS = {
     "and",
     "but",
@@ -810,13 +829,20 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
             WHISPERX_CHUNK_SIZE,
             runtime_device,
         )
-        result = model.transcribe(
-            audio,
-            batch_size=WHISPERX_BATCH_SIZE,
-            language=language,
-            chunk_size=WHISPERX_CHUNK_SIZE,
-            verbose=False,
-        )
+        try:
+            result = model.transcribe(
+                audio,
+                batch_size=WHISPERX_BATCH_SIZE,
+                language=language,
+                chunk_size=WHISPERX_CHUNK_SIZE,
+                verbose=False,
+            )
+        except IndexError as exc:
+            if not _is_empty_whisperx_batch_error(exc):
+                raise
+            raise NoSpeechDetected(
+                "WhisperX VAD found no active speech in the input audio."
+            ) from exc
         segments = result.get("segments", [])
         result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
         log.info(

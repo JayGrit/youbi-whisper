@@ -53,6 +53,12 @@ def _row_value(row: Any, index: int = 0) -> Any:
     return row[index]
 
 
+def _is_false(value: Any) -> bool:
+    if isinstance(value, str):
+        return value.strip().lower() in {"0", "false", "no", "off"}
+    return value is False or value == 0
+
+
 def _staged_table_exists_cur(cur, table: str) -> bool:
     cur.execute(
         """
@@ -838,7 +844,38 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
             f"UPDATE {stage.table} SET {', '.join(assignments)} WHERE task_id = %s",
             values,
         )
-        if stage.next_table:
+        if stage.name == "whisper" and _is_false(fields.get("need_subtitle")):
+            for skipped_table in ("translator", "speaker", "combiner"):
+                cur.execute(
+                    f"""
+                    UPDATE {skipped_table}
+                    SET status = %s, completed_at = NOW(), error_message = NULL
+                    WHERE task_id = %s
+                      AND status IN ('pending', 'ready', 'failed')
+                    """,
+                    ("skipped", task_id),
+                )
+            cur.execute(
+                """
+                UPDATE uploader
+                SET status = %s, completed_at = NULL, error_message = NULL
+                WHERE task_id = %s
+                  AND status IN ('pending', 'skipped', 'failed')
+                """,
+                (READY, task_id),
+            )
+            cur.execute(
+                """
+                UPDATE task
+                SET status = 'running',
+                    current_stage = 'uploader',
+                    completed_at = NULL,
+                    error_message = NULL
+                WHERE id = %s
+                """,
+                (task_id,),
+            )
+        elif stage.next_table:
             cur.execute(
                 f"UPDATE {stage.next_table} SET status = %s WHERE task_id = %s AND status = 'pending'",
                 (READY, task_id),
