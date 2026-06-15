@@ -70,8 +70,19 @@ echo Model: large-v3-turbo
 echo Runtime device: auto
 echo Model root: %YDBI_WHISPER_MODEL_ROOT%
 echo Work dir: %YDBI_WHISPER_WORK_DIR%
+echo Auto update: git pull every 60 seconds
 echo.
 
-".venv\Scripts\python.exe" -m ydbi_whisper.main
+powershell.exe -NoProfile -ExecutionPolicy Bypass -Command ^
+  "$ErrorActionPreference = 'Stop';" ^
+  "$Root = (Get-Location).Path;" ^
+  "$Python = Join-Path $Root '.venv\Scripts\python.exe';" ^
+  "function Invoke-DependencyInstall { Write-Host 'Installing Python dependencies after update...'; & $Python -m pip install -e .; if ($LASTEXITCODE -ne 0) { throw 'pip install -e . failed' } }" ^
+  "function Start-Whisper { Write-Host 'Starting ydbi-whisper...'; return Start-Process -FilePath $Python -ArgumentList @('-m', 'ydbi_whisper.main') -WorkingDirectory $Root -PassThru -NoNewWindow }" ^
+  "function Stop-Whisper($Process) { if ($Process -and -not $Process.HasExited) { Write-Host ('Stopping ydbi-whisper process ' + $Process.Id + '...'); Stop-Process -Id $Process.Id -Force; Wait-Process -Id $Process.Id -Timeout 30 -ErrorAction SilentlyContinue } }" ^
+  "function Get-Head { try { return (& git -C $Root rev-parse HEAD 2>$null).Trim() } catch { return '' } }" ^
+  "function Update-Repository { $Before = Get-Head; if (-not $Before) { Write-Warning 'Not a git repository or git is unavailable; skipping auto update.'; return $false }; Write-Host 'Checking for updates...'; & git -C $Root pull --ff-only; if ($LASTEXITCODE -ne 0) { Write-Warning 'git pull failed; keeping current process running.'; return $false }; $After = Get-Head; return ($After -and $After -ne $Before) }" ^
+  "$Process = Start-Whisper;" ^
+  "try { while ($true) { Start-Sleep -Seconds 60; if ($Process.HasExited) { Write-Warning ('ydbi-whisper exited with code ' + $Process.ExitCode + '; restarting.'); $Process = Start-Whisper; continue }; if (Update-Repository) { Write-Host 'Repository updated; restarting ydbi-whisper.'; Stop-Whisper $Process; Invoke-DependencyInstall; $Process = Start-Whisper } } } finally { Stop-Whisper $Process }"
 
 endlocal
