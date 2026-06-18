@@ -17,6 +17,7 @@ dependencies = [
 ydbi-whisper = "ydbi_whisper.main:main"
 ydbi-whisper-api = "ydbi_whisper.api:main"
 ydbi-whisper-test = "ydbi_whisper.local_test:main"
+ydbi-whisper-local = "ydbi_whisper.local_export:main"
 
 [tool.setuptools]
 packages = ["ydbi_whisper"]
