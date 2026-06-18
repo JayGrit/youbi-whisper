@@ -34,14 +34,6 @@ def _download_destination(session: Path, source_ref: str) -> Path:
     return session / "media" / f"audio_vocals{suffix}"
 
 
-def _is_false(value) -> bool:
-    if value is None:
-        return False
-    if isinstance(value, str):
-        return value.strip().lower() in {"0", "false", "no", "off"}
-    return value is False or value == 0
-
-
 def _vocals_input_for(row: dict, session: Path) -> Path:
     # 从任务行中取出 task_id
     task_id = row["task_id"]
@@ -51,7 +43,7 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     audio_vocals_url = str(row.get("audio_vocals_url") or "").strip()
     input_url = audio_vocals_url
     input_label = "vocals"
-    if not input_url and _is_false(row.get("need_separation")):
+    if not input_url:
         input_url = str(row.get("audio_source_url") or "").strip()
         input_label = "source audio"
 
@@ -133,10 +125,7 @@ def handle(row: dict) -> dict[str, Any]:
                 exc,
             )
             db.finish_whisper_run(run_id, "success")
-            return {
-                "need_subtitle": 0,
-                "need_dubbing": 0,
-            }
+            return {}
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等

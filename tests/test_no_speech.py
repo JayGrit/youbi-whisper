@@ -45,7 +45,7 @@ class NoSpeechPipelineTest(unittest.TestCase):
             db.mark_success(
                 "whisper",
                 "task-1",
-                {"need_subtitle": 0, "need_dubbing": 0},
+                {},
             )
 
         sql = "\n".join(statement for statement, _ in connection.cursor_instance.statements)
@@ -58,7 +58,7 @@ class NoSpeechPipelineTest(unittest.TestCase):
         self.assertTrue(connection.committed)
         upsert.assert_called_once_with(
             "task-1",
-            {"need_subtitle": 0, "need_dubbing": 0},
+            {},
             connection.cursor_instance,
         )
 

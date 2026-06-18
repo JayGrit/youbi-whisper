@@ -12,9 +12,6 @@ TABLE = "video_info"
 COLUMNS: dict[str, str] = {
     "source_url": "TEXT",
     "submitter_video_id": "BIGINT UNSIGNED",
-    "need_subtitle": "TINYINT(1)",
-    "need_dubbing": "TINYINT(1)",
-    "need_separation": "TINYINT(1)",
     "metadata_url": "TEXT",
     "video_source_url": "TEXT",
     "audio_source_path": "TEXT",
@@ -91,7 +88,8 @@ def get(task_id: str) -> dict[str, Any] | None:
     ensure_schema()
     with _connect() as conn:
         cur = conn.cursor(dictionary=True)
-        cur.execute(f"SELECT * FROM {TABLE} WHERE task_id = %s", (task_id,))
+        columns = ", ".join(["task_id", *COLUMNS])
+        cur.execute(f"SELECT {columns} FROM {TABLE} WHERE task_id = %s", (task_id,))
         return cur.fetchone()
 
 
