@@ -8,6 +8,7 @@ from typing import Any
 
 from . import db
 from .config import POLL_INTERVAL_SECONDS
+from .service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
 
@@ -34,7 +35,7 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
 
 
 def run_polling_worker(handler: Handler) -> None:
-    stage_name = "whisper";
+    stage_name = SERVICE_NAME
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     log.info("whisper service started")
     while True:
