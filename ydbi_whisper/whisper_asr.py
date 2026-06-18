@@ -147,7 +147,7 @@ def _load_model():
     # 如果模型还没有加载过，则进行首次加载
     if _MODEL is None:
         runtime_device = _runtime_device_for_engine()
-        log.info(
+        log.debug(
             "whisper loading model engine=%s model=%s model_path=%s configured_device=%s runtime_device=%s download_root=%s torch_home=%s",
             WHISPER_ENGINE,
             WHISPER_MODEL,
@@ -169,7 +169,7 @@ def _load_model():
                 vad_options=_whisperx_vad_options(),
                 download_root=WHISPER_DOWNLOAD_ROOT or None,
             )
-            log.info(
+            log.debug(
                 "whisper model loaded engine=%s model=%s model_path=%s runtime_device=%s",
                 WHISPER_ENGINE,
                 WHISPER_MODEL,
@@ -193,7 +193,7 @@ def _load_model():
             device=runtime_device,
             download_root=WHISPER_DOWNLOAD_ROOT or None,
         )
-        log.info("whisper model loaded engine=%s model=%s runtime_device=%s", WHISPER_ENGINE, WHISPER_MODEL, runtime_device)
+        log.debug("whisper model loaded engine=%s model=%s runtime_device=%s", WHISPER_ENGINE, WHISPER_MODEL, runtime_device)
 
     # 返回已加载好的模型实例
     return _MODEL
@@ -376,14 +376,16 @@ def _wtpsplit_model():
             from wtpsplit import WtP
         except Exception as fallback_exc:
             _WTPSPLIT_UNAVAILABLE = True
-            log.warning("wtpsplit import failed, keep long segment unsplit: %s", fallback_exc)
+            log.warning("语义分句组件不可用，长句将保持原样")
+            log.debug("wtpsplit import failed", exc_info=fallback_exc)
             return None
 
         try:
             _WTPSPLIT_MODEL = WtP("wtp-bert-mini", ignore_legacy_warning=True)
         except Exception as fallback_exc:
             _WTPSPLIT_UNAVAILABLE = True
-            log.warning("wtpsplit WtP model load failed, keep long segment unsplit: %s", fallback_exc)
+            log.warning("语义分句模型加载失败，长句将保持原样")
+            log.debug("wtpsplit WtP model load failed", exc_info=fallback_exc)
             return None
         return _WTPSPLIT_MODEL
 
@@ -391,7 +393,8 @@ def _wtpsplit_model():
         _WTPSPLIT_MODEL = SaT("sat-3l-sm")
     except Exception as exc:
         _WTPSPLIT_UNAVAILABLE = True
-        log.warning("wtpsplit SaT model load failed, keep long segment unsplit: %s", exc)
+        log.warning("语义分句模型加载失败，长句将保持原样")
+        log.debug("wtpsplit SaT model load failed", exc_info=exc)
         return None
     return _WTPSPLIT_MODEL
 
@@ -454,7 +457,8 @@ def _semantic_split_at(words: list[dict], language: str | None = None) -> int | 
     try:
         semantic_parts = _semantic_parts(model, full_text, lang)
     except Exception as exc:
-        log.warning("wtpsplit split failed, keep long segment unsplit: %s", exc)
+        log.warning("语义分句失败，长句将保持原样")
+        log.debug("wtpsplit split failed", exc_info=exc)
         return None
 
     if len(semantic_parts) <= 1:
@@ -626,7 +630,8 @@ def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
     try:
         import pysbd
     except Exception as exc:
-        log.warning("pysbd import failed, fallback to punctuation regroup: %s", exc)
+        log.warning("句子切分组件不可用，已改用标点切分")
+        log.debug("pysbd import failed", exc_info=exc)
         return []
 
     word_spans = []
@@ -653,7 +658,8 @@ def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
         segmenter = pysbd.Segmenter(language=segmenter_language, clean=False)
         sentence_texts = [sentence.strip() for sentence in segmenter.segment(full_text) if sentence.strip()]
     except Exception as exc:
-        log.warning("pysbd segment failed language=%s, fallback to punctuation regroup: %s", segmenter_language, exc)
+        log.warning("句子切分失败，已改用标点切分")
+        log.debug("pysbd segment failed language=%s", segmenter_language, exc_info=exc)
         return []
 
     if len(sentence_texts) <= 1:
@@ -773,7 +779,7 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
         return result
 
     align_language = str(result.get("language") or language or "en").lower()
-    log.info(
+    log.debug(
         "whisperx align model loading language=%s model=%s model_dir=%s runtime_device=%s",
         align_language,
         WHISPERX_ALIGN_MODEL or None,
@@ -787,7 +793,7 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
         model_name=WHISPERX_ALIGN_MODEL or None,
         model_dir=WHISPERX_ALIGN_MODEL_DIR,
     )
-    log.info(
+    log.debug(
         "whisperx align start language=%s segments=%s interpolate_method=%s",
         align_language,
         len(result.get("segments") or []),
@@ -806,7 +812,7 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
     aligned_segments = aligned.get("segments") or []
     aligned["text"] = " ".join(str(seg.get("text") or "").strip() for seg in aligned_segments).strip()
     aligned["language"] = align_language
-    log.info(
+    log.debug(
         "whisperx align done language=%s aligned_segments=%s word_segments=%s",
         align_language,
         len(aligned_segments),
@@ -819,9 +825,9 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
     if WHISPER_ENGINE == "whisperx":
         import whisperx
 
-        log.info("whisperx loading audio file=%s", vocals_file)
+        log.debug("whisperx loading audio file=%s", vocals_file)
         audio = whisperx.load_audio(str(vocals_file))
-        log.info(
+        log.debug(
             "whisperx transcribe start file=%s language=%s batch_size=%s chunk_size=%s runtime_device=%s",
             vocals_file,
             language,
@@ -845,7 +851,7 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
             ) from exc
         segments = result.get("segments", [])
         result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
-        log.info(
+        log.debug(
             "whisperx transcribe done file=%s language=%s segments=%s text_chars=%s",
             vocals_file,
             result.get("language") or language,
@@ -854,7 +860,7 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
         )
         return result, audio
 
-    log.info(
+    log.debug(
         "openai whisper transcribe start file=%s language=%s runtime_device=%s word_timestamps=%s",
         vocals_file,
         language,
@@ -900,8 +906,8 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
 
     # 如果 OpenAI Whisper 在 MPS 上关闭了词级时间戳，打印 warning，方便排查为什么 words 为空
     if WHISPER_ENGINE == "openai" and not word_timestamps:
-        log.warning("Whisper is running on MPS; word timestamps are disabled to avoid MPS float64 DTW failure.")
-    log.info(
+        log.warning("当前设备不支持词级时间戳，已自动关闭")
+    log.debug(
         "whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s align=%s",
         vocals_file,
         WHISPER_ENGINE,
@@ -996,7 +1002,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
 
     # 将 Whisper 返回的 segments 转成项目内部统一的 utterances 格式
     utterances = _convert_segments(result.get("segments", []))
-    log.info("whisper result converted audio=%s utterances=%s", vocals_file, len(utterances))
+    log.debug("whisper result converted audio=%s utterances=%s", vocals_file, len(utterances))
 
     # 如果 Whisper 没有返回任何语音片段，说明识别结果不可用
     if not utterances:

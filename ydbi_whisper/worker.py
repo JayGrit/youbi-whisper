@@ -23,12 +23,12 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
             try:
                 db.record_service_poll()
             except Exception:
-                log.exception("%s failed to update task heartbeat", stage_name)
+                log.exception("更新任务心跳失败")
 
     try:
         db.record_service_poll()
     except Exception:
-        log.exception("%s failed to update task heartbeat", stage_name)
+        log.exception("更新任务心跳失败")
     thread = threading.Thread(target=heartbeat_loop, name=f"{stage_name}-heartbeat", daemon=True)
     thread.start()
     return stop_event
@@ -36,17 +36,19 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
 
 def run_polling_worker(handler: Handler) -> None:
     stage_name = SERVICE_NAME
-    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
-    log.info("whisper service started")
+    logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
+    for logger_name in ("faster_whisper", "huggingface_hub", "pyannote", "speechbrain", "torch", "urllib3", "whisperx"):
+        logging.getLogger(logger_name).setLevel(logging.WARNING)
+    log.info("语音识别服务已启动")
     while True:
         try:
             db.record_service_poll()
             recycled = db.recycle_stale_running(stage_name)
             if recycled:
-                log.warning("%s recycled %d stale running task(s)", stage_name, recycled)
+                log.warning("已回收 %d 个超时任务", recycled)
             row = db.find_ready(stage_name)
         except Exception:
-            log.exception("%s failed to poll database; retrying in %ss", stage_name, POLL_INTERVAL_SECONDS)
+            log.exception("查询待处理任务失败，%s 秒后重试", POLL_INTERVAL_SECONDS)
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
         if not row:
@@ -57,14 +59,14 @@ def run_polling_worker(handler: Handler) -> None:
         if not db.mark_running(stage_name, task_id):
             continue
 
-        log.info("%s task %s started", stage_name, task_id)
+        log.info("任务 %s：开始处理", task_id)
         heartbeat_stop = _start_task_heartbeat(stage_name)
         try:
             outputs = handler(row) or {}
             db.mark_success(stage_name, task_id, outputs)
-            log.info("%s task %s succeeded", stage_name, task_id)
+            log.info("任务 %s：处理完成", task_id)
         except Exception as exc:
-            log.exception("%s task %s failed", stage_name, task_id)
+            log.exception("任务 %s：处理失败", task_id)
             db.mark_failed(stage_name, task_id, str(exc))
         finally:
             heartbeat_stop.set()

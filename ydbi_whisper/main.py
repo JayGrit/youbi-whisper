@@ -54,9 +54,9 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     # 计算本地下载目标路径
     destination = _download_destination(session, input_url)
 
-    # 打印下载日志，方便排查当前任务下载的来源和目标路径
-    log.info(
-        "whisper task=%s downloading %s from minio url=%s destination=%s",
+    log.info("任务 %s：正在下载人声音频", task_id)
+    log.debug(
+        "任务 %s 下载详情：输入类型=%s，来源=%s，目标=%s",
         task_id,
         input_label,
         input_url,
@@ -100,13 +100,8 @@ def handle(row: dict) -> dict[str, Any]:
             input_sha256=_sha256(vocals),
         )
 
-        # 打印 Whisper 识别前的关键信息
-        log.info(
-            "whisper task=%s vocals=%s language=%s",
-            task_id,
-            vocals,
-            source.asr_language,
-        )
+        log.info("任务 %s：正在识别语音", task_id)
+        log.debug("任务 %s 识别参数：音频=%s，语言=%s", task_id, vocals, source.asr_language)
 
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
@@ -118,12 +113,8 @@ def handle(row: dict) -> dict[str, Any]:
                 task_id=task_id,
                 run_id=run_id,
             )
-        except NoSpeechDetected as exc:
-            log.warning(
-                "whisper task=%s has no active speech; skipping subtitle pipeline: %s",
-                task_id,
-                exc,
-            )
+        except NoSpeechDetected:
+            log.warning("任务 %s：未检测到有效语音，已跳过字幕处理", task_id)
             db.finish_whisper_run(run_id, "success")
             return {}
 
@@ -135,9 +126,8 @@ def handle(row: dict) -> dict[str, Any]:
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
         word_count = sum(len(item.get("words") or []) for item in asr_segments)
 
-        # 打印识别完成日志，包括分段数和词级数量
         log.info(
-            "whisper recognized task=%s segments=%d words=%d",
+            "任务 %s：语音识别完成，共 %d 段、%d 个词",
             task_id,
             len(asr_segments),
             word_count,
@@ -157,8 +147,7 @@ def handle(row: dict) -> dict[str, Any]:
     # 这里不是实际文件路径，而是一个逻辑引用，表示从 asr_segment 表读取该任务分段
     asr_ref = f"db://asr_segment/{task_id}"
 
-    # 打印当前 whisper 阶段最终产物引用
-    log.info("whisper output task=%s asr_ref=%s", task_id, asr_ref)
+    log.debug("任务 %s 识别结果：%s", task_id, asr_ref)
 
     # 返回给 worker 框架的阶段产物
     # 一般会被写回当前阶段表或任务状态中，供后续 translator / merger 等阶段使用
