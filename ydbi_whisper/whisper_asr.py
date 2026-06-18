@@ -774,11 +774,20 @@ def _regroup_aligned_segments(segments: list[dict], language: str) -> tuple[list
     return pysbd_segments, long_split_segments
 
 
-def _align_whisperx_result(whisperx, result: dict, audio: object, language: str, runtime_device: str) -> dict:
+def _align_whisperx_result(
+    whisperx,
+    result: dict,
+    audio: object,
+    language: str,
+    runtime_device: str,
+    task_id: str | None = None,
+) -> dict:
     if not WHISPERX_ALIGN or not result.get("segments"):
         return result
 
     align_language = str(result.get("language") or language or "en").lower()
+    task_label = task_id or "本地任务"
+    log.info("任务 %s：正在加载时间轴对齐模型", task_label)
     log.debug(
         "whisperx align model loading language=%s model=%s model_dir=%s runtime_device=%s",
         align_language,
@@ -792,6 +801,11 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
         runtime_device,
         model_name=WHISPERX_ALIGN_MODEL or None,
         model_dir=WHISPERX_ALIGN_MODEL_DIR,
+    )
+    log.info(
+        "任务 %s：正在进行时间轴对齐，原始片段 %d 段",
+        task_label,
+        len(result.get("segments") or []),
     )
     log.debug(
         "whisperx align start language=%s segments=%s interpolate_method=%s",
@@ -812,6 +826,12 @@ def _align_whisperx_result(whisperx, result: dict, audio: object, language: str,
     aligned_segments = aligned.get("segments") or []
     aligned["text"] = " ".join(str(seg.get("text") or "").strip() for seg in aligned_segments).strip()
     aligned["language"] = align_language
+    log.info(
+        "任务 %s：时间轴对齐完成，共 %d 段、%d 个词",
+        task_label,
+        len(aligned_segments),
+        len(aligned.get("word_segments") or []),
+    )
     log.debug(
         "whisperx align done language=%s aligned_segments=%s word_segments=%s",
         align_language,
@@ -935,7 +955,14 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
     if WHISPER_ENGINE == "whisperx" and audio is not None:
         import whisperx
 
-        aligned_result = _align_whisperx_result(whisperx, raw_result, audio, language, runtime_device)
+        aligned_result = _align_whisperx_result(
+            whisperx,
+            raw_result,
+            audio,
+            language,
+            runtime_device,
+            task_id=task_id,
+        )
         aligned_segments = aligned_result.get("segments") or []
         _assign_word_indexes(aligned_segments)
         if task_id is not None and run_id is not None:
