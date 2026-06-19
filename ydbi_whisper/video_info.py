@@ -10,6 +10,8 @@ from .config import MYSQL_CONFIG
 TABLE = "video_info"
 
 COLUMNS: dict[str, str] = {
+    "task_type": "VARCHAR(32)",
+    "has_background_audio": "TINYINT(1)",
     "source_url": "TEXT",
     "submitter_video_id": "BIGINT UNSIGNED",
     "metadata_url": "TEXT",
