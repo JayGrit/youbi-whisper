@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import importlib
 import re
+import unicodedata
 from pathlib import Path
 
 from . import db
@@ -267,6 +268,67 @@ def _convert_segments(segments: list) -> list:
 
 def _word_text(word: dict) -> str:
     return str(word.get("word") or word.get("text") or "").strip()
+
+
+def _is_punctuation_only(text: str) -> bool:
+    value = str(text or "").strip()
+    return bool(value) and all(
+        unicodedata.category(char).startswith("P") for char in value
+    )
+
+
+def _narration_segments_without_punctuation_timing(
+    segments: list[dict],
+    language: str,
+) -> tuple[list[dict], list[dict]]:
+    """Remove punctuation timestamps and expose their duration as subtitle gaps."""
+    cleaned_segments = []
+    caption_segments = []
+
+    for aligned_index, segment in enumerate(segments):
+        source_words = segment.get("words") or []
+        cleaned_words = [
+            word for word in source_words if not _is_punctuation_only(_word_text(word))
+        ]
+        cleaned_segments.append({**segment, "words": cleaned_words})
+
+        current_words: list[dict] = []
+        trailing_punctuation = ""
+
+        def flush() -> None:
+            nonlocal current_words, trailing_punctuation
+            if not current_words:
+                trailing_punctuation = ""
+                return
+            caption = _segment_from_words(current_words, language)
+            if caption is not None:
+                caption["text"] = (
+                    _join_word_texts(current_words, language) + trailing_punctuation
+                )
+                caption["_whisper_aligned_segment_index"] = aligned_index
+                caption["_whisper_segmentation_method"] = (
+                    "narration_punctuation_gap"
+                )
+                caption_segments.append(caption)
+            current_words = []
+            trailing_punctuation = ""
+
+        for word in source_words:
+            text = _word_text(word)
+            if not text:
+                continue
+            if _is_punctuation_only(text):
+                if current_words:
+                    trailing_punctuation += text
+                continue
+            if trailing_punctuation:
+                flush()
+            if "start" in word and "end" in word:
+                current_words.append(word)
+
+        flush()
+
+    return cleaned_segments, caption_segments
 
 
 def _word_separator(language: str | None) -> str:
@@ -1065,7 +1127,12 @@ def align_known_text(
         runtime_device,
         task_id=task_id,
     )
-    aligned_segments = aligned_result.get("segments") or []
+    aligned_segments, narration_segments = (
+        _narration_segments_without_punctuation_timing(
+            aligned_result.get("segments") or [],
+            language,
+        )
+    )
     _assign_word_indexes(aligned_segments)
     word_ids: dict[int, int] = {}
     aligned_segment_ids: dict[int, int] = {}
@@ -1093,9 +1160,8 @@ def align_known_text(
                 if global_index in word_ids:
                     word["_whisper_aligned_word_id"] = word_ids[global_index]
 
-    pysbd_segments, final_segments = _regroup_aligned_segments(
-        aligned_segments, language
-    )
+    pysbd_segments = narration_segments
+    final_segments = narration_segments
     if task_id is not None and run_id is not None:
         for segment in pysbd_segments:
             aligned_index = segment.get("_whisper_aligned_segment_index")

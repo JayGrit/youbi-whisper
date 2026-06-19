@@ -83,6 +83,40 @@ class KnownTextAlignmentTests(unittest.TestCase):
 
         self.assertEqual("其实。", segment["text"])
 
+    def test_narration_punctuation_has_no_timestamp_and_creates_gap(self) -> None:
+        source = [
+            {
+                "text": "AAAAA,BBBBB。",
+                "start": 0.1,
+                "end": 2.2,
+                "words": [
+                    {"word": "AAAAA", "start": 0.1, "end": 0.8},
+                    {"word": ",", "start": 0.8, "end": 1.2},
+                    {"word": "BBBBB", "start": 1.2, "end": 2.0},
+                    {"word": "。", "start": 2.0, "end": 2.2},
+                ],
+            }
+        ]
+
+        cleaned, captions = (
+            whisper_asr._narration_segments_without_punctuation_timing(source, "zh")
+        )
+
+        self.assertEqual(
+            ["AAAAA", "BBBBB"],
+            [word["word"] for word in cleaned[0]["words"]],
+        )
+        self.assertEqual(
+            [
+                ("AAAAA,", 0.1, 0.8),
+                ("BBBBB。", 1.2, 2.0),
+            ],
+            [
+                (segment["text"], segment["start"], segment["end"])
+                for segment in captions
+            ],
+        )
+
     def test_known_text_uses_database_timing_as_align_input(self) -> None:
         fake_whisperx = types.SimpleNamespace(load_audio=mock.Mock(return_value="audio"))
         aligned = {
@@ -141,6 +175,17 @@ class KnownTextAlignmentTests(unittest.TestCase):
             transcript,
         )
         self.assertEqual("其实。", payload["result"]["text"])
+        self.assertEqual(
+            [
+                ("其", 250, 500),
+                ("实", 500, 800),
+            ],
+            [
+                (word["text"], word["start_time"], word["end_time"])
+                for word in payload["result"]["utterances"][0]["words"]
+            ],
+        )
+        self.assertEqual(800, payload["result"]["utterances"][0]["end_time"])
 
 
 if __name__ == "__main__":
