@@ -16,6 +16,7 @@ from .config import (
     WHISPER_RUNTIME_DEVICE,
     WHISPERX_ALIGN,
     WHISPERX_ALIGN_INTERPOLATE_METHOD,
+    WHISPERX_ALIGN_LOCAL_FILES_ONLY,
     WHISPERX_ALIGN_MODEL,
     WHISPERX_ALIGN_MODEL_DIR,
     WHISPERX_MODEL_PATH,
@@ -32,6 +33,7 @@ from .config import (
 
 # 全局模型缓存变量，用于避免每次识别时都重新加载 Whisper 模型
 _MODEL = None
+_ALIGN_MODELS: dict[tuple[str, str, str, str], tuple[object, dict]] = {}
 
 # 当前模块的 logger，用于输出运行时日志
 log = logging.getLogger(__name__)
@@ -101,6 +103,7 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
             "align": WHISPERX_ALIGN,
             "align_model": WHISPERX_ALIGN_MODEL or None,
             "align_model_dir": WHISPERX_ALIGN_MODEL_DIR,
+            "align_local_files_only": WHISPERX_ALIGN_LOCAL_FILES_ONLY,
             "align_interpolate_method": WHISPERX_ALIGN_INTERPOLATE_METHOD,
             "regroup": {
                 "max_chars": WHISPERX_REGROUP_MAX_CHARS,
@@ -808,12 +811,31 @@ def _align_whisperx_result(
         runtime_device,
     )
     Path(WHISPERX_ALIGN_MODEL_DIR).expanduser().mkdir(parents=True, exist_ok=True)
-    align_model, align_metadata = whisperx.load_align_model(
+    align_key = (
         align_language,
         runtime_device,
-        model_name=WHISPERX_ALIGN_MODEL or None,
-        model_dir=WHISPERX_ALIGN_MODEL_DIR,
+        WHISPERX_ALIGN_MODEL or "",
+        str(Path(WHISPERX_ALIGN_MODEL_DIR).expanduser()),
     )
+    cached_align = _ALIGN_MODELS.get(align_key)
+    if cached_align is None:
+        try:
+            cached_align = whisperx.load_align_model(
+                align_language,
+                runtime_device,
+                model_name=WHISPERX_ALIGN_MODEL or None,
+                model_dir=WHISPERX_ALIGN_MODEL_DIR,
+                model_cache_only=WHISPERX_ALIGN_LOCAL_FILES_ONLY,
+            )
+        except (OSError, ValueError) as exc:
+            if WHISPERX_ALIGN_LOCAL_FILES_ONLY:
+                raise RuntimeError(
+                    "WhisperX align model is not available in the local cache: "
+                    f"language={align_language}, dir={WHISPERX_ALIGN_MODEL_DIR}"
+                ) from exc
+            raise
+        _ALIGN_MODELS[align_key] = cached_align
+    align_model, align_metadata = cached_align
     log.info(
         "任务 %s：正在进行时间轴对齐，原始片段 %d 段",
         task_label,

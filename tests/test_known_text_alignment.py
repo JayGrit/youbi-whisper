@@ -10,6 +10,32 @@ from ydbi_whisper import whisper_asr
 
 
 class KnownTextAlignmentTests(unittest.TestCase):
+    def test_align_model_uses_local_cache_and_is_reused(self) -> None:
+        fake_whisperx = types.SimpleNamespace(
+            load_align_model=mock.Mock(return_value=("model", {"language": "zh"})),
+            align=mock.Mock(
+                return_value={"segments": [], "word_segments": []}
+            ),
+        )
+        whisper_asr._ALIGN_MODELS.clear()
+
+        for _ in range(2):
+            whisper_asr._align_whisperx_result(
+                fake_whisperx,
+                {
+                    "language": "zh",
+                    "segments": [{"text": "其实。", "start": 0.0, "end": 1.0}],
+                },
+                "audio",
+                "zh",
+                "cpu",
+            )
+
+        fake_whisperx.load_align_model.assert_called_once()
+        self.assertTrue(
+            fake_whisperx.load_align_model.call_args.kwargs["model_cache_only"]
+        )
+
     def test_chinese_words_are_joined_without_spaces(self) -> None:
         segment = whisper_asr._segment_from_words(
             [
