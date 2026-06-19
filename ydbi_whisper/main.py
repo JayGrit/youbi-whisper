@@ -40,12 +40,19 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
 
     # 从任务行中取出人声音频的远程地址
     # 这里一般是 MinIO 或其他对象存储中的 audio_vocals_url
-    audio_vocals_url = str(row.get("audio_vocals_url") or "").strip()
+    narration_audio_url = (
+        str(row.get("audio_dubbing_url") or "").strip()
+        if str(row.get("task_type") or "").strip().lower() == "narration"
+        else ""
+    )
+    audio_vocals_url = narration_audio_url or str(row.get("audio_vocals_url") or "").strip()
     input_url = audio_vocals_url
     input_label = "vocals"
     if not input_url:
         input_url = str(row.get("audio_source_url") or "").strip()
         input_label = "source audio"
+    elif narration_audio_url:
+        input_label = "narration audio"
 
     # 如果没有人声音频地址，说明上游 demucs 或下载阶段没有正确产出 vocals
     if not input_url:
@@ -87,21 +94,33 @@ def handle(row: dict) -> dict[str, Any]:
         # 根据任务的 source_url 判断来源
         # source 中一般会包含 asr_language 等配置
         source_url = str(task.get("source_url") or "").strip()
-        if not source_url:
-            raise ValueError(f"source_url is missing for task: {task_id}")
-        source = detect_source(source_url)
+        narration_task = str(row.get("task_type") or "").strip().lower() == "narration"
+        if narration_task:
+            asr_language = "zh"
+            source_name = "narration"
+        else:
+            if not source_url:
+                raise ValueError(f"source_url is missing for task: {task_id}")
+            source = detect_source(source_url)
+            asr_language = source.asr_language
+            source_name = source.name
         run_id = db.create_whisper_run(
             task_id=task_id,
-            language=source.asr_language,
-            source_url=source_url,
-            input_audio_url=str(row.get("audio_vocals_url") or row.get("audio_source_url") or ""),
+            language=asr_language,
+            source_url=source_url or source_name,
+            input_audio_url=str(
+                row.get("audio_dubbing_url")
+                or row.get("audio_vocals_url")
+                or row.get("audio_source_url")
+                or ""
+            ),
             input_local_path=str(vocals),
             input_file_size=vocals.stat().st_size,
             input_sha256=_sha256(vocals),
         )
 
         log.info("任务 %s：正在识别语音", task_id)
-        log.debug("任务 %s 识别参数：音频=%s，语言=%s", task_id, vocals, source.asr_language)
+        log.debug("任务 %s 识别参数：音频=%s，语言=%s", task_id, vocals, asr_language)
 
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
@@ -109,7 +128,7 @@ def handle(row: dict) -> dict[str, Any]:
             data = recognize_speech(
                 vocals,
                 session,
-                language=source.asr_language,
+                language=asr_language,
                 task_id=task_id,
                 run_id=run_id,
             )
@@ -120,7 +139,7 @@ def handle(row: dict) -> dict[str, Any]:
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
-        asr_segments = db.save_asr_result(task_id, source.asr_language, data, run_id=run_id)
+        asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
 
         # 统计所有 ASR segment 中的词级时间戳数量
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
