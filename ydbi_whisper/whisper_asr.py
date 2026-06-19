@@ -265,6 +265,16 @@ def _word_text(word: dict) -> str:
     return str(word.get("word") or word.get("text") or "").strip()
 
 
+def _word_separator(language: str | None) -> str:
+    return "" if _sentence_segmenter_language(language or "en") in {"zh", "ja"} else " "
+
+
+def _join_word_texts(words: list[dict], language: str | None = None) -> str:
+    return _word_separator(language).join(
+        _word_text(word) for word in words if _word_text(word)
+    ).strip()
+
+
 def _assign_word_indexes(segments: list[dict]) -> None:
     global_word_index = 0
     for segment_index, segment in enumerate(segments):
@@ -276,9 +286,9 @@ def _assign_word_indexes(segments: list[dict]) -> None:
             global_word_index += 1
 
 
-def _segment_from_words(words: list[dict]) -> dict | None:
+def _segment_from_words(words: list[dict], language: str | None = None) -> dict | None:
     timed_words = [word for word in words if "start" in word and "end" in word]
-    text = " ".join(_word_text(word) for word in words if _word_text(word)).strip()
+    text = _join_word_texts(words, language)
     if not text or not timed_words:
         return None
     first_word = words[0] if words else {}
@@ -314,8 +324,8 @@ _WTPSPLIT_MODEL = None
 _WTPSPLIT_UNAVAILABLE = False
 
 
-def _word_text_length(words: list[dict]) -> int:
-    return len(" ".join(_word_text(word) for word in words if _word_text(word)).strip())
+def _word_text_length(words: list[dict], language: str | None = None) -> int:
+    return len(_join_word_texts(words, language))
 
 
 def _split_punctuation_value(text: str) -> str | None:
@@ -441,9 +451,10 @@ def _semantic_split_at(words: list[dict], language: str | None = None) -> int | 
         text = _word_text(word)
         if not text:
             continue
-        if text_parts:
-            text_parts.append(" ")
-            cursor += 1
+        separator = _word_separator(language)
+        if text_parts and separator:
+            text_parts.append(separator)
+            cursor += len(separator)
         start = cursor
         text_parts.append(text)
         cursor += len(text)
@@ -524,7 +535,7 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
         split_conjunction: str | None = None,
         split_method: str | None = None,
     ) -> None:
-        grouped = _segment_from_words(group_words)
+        grouped = _segment_from_words(group_words, language)
         if grouped is not None:
             grouped["_whisper_pysbd_index"] = pysbd_index
             grouped["_whisper_split_applied"] = split_applied
@@ -547,7 +558,7 @@ def _split_long_segment_on_minor_punctuation(segment: dict, pysbd_index: int | N
         if not text:
             continue
         current_words.append(word)
-        current_segment = _segment_from_words(current_words)
+        current_segment = _segment_from_words(current_words, language)
         if current_segment is None or not _segment_too_long(current_segment):
             continue
 
@@ -641,9 +652,10 @@ def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
         text = _word_text(word)
         if not text:
             continue
-        if text_parts:
-            text_parts.append(" ")
-            cursor += 1
+        separator = _word_separator(language)
+        if text_parts and separator:
+            text_parts.append(separator)
+            cursor += len(separator)
         start = cursor
         text_parts.append(text)
         cursor += len(text)
@@ -681,7 +693,7 @@ def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
             sentence_words.append(word_spans[scan_index][2])
             scan_index += 1
         word_index = scan_index
-        segment = _segment_from_words(sentence_words)
+        segment = _segment_from_words(sentence_words, language)
         if segment is not None:
             segment["_whisper_pysbd_language"] = segmenter_language
             segment["_whisper_segmentation_method"] = "pysbd"
@@ -691,13 +703,13 @@ def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
     return segments
 
 
-def _regroup_words_by_punctuation(words: list[dict]) -> list[dict]:
+def _regroup_words_by_punctuation(words: list[dict], language: str) -> list[dict]:
     regrouped = []
     current_words = []
 
     def flush() -> None:
         nonlocal current_words
-        segment = _segment_from_words(current_words)
+        segment = _segment_from_words(current_words, language)
         if segment is None:
             current_words = []
             return
@@ -731,7 +743,7 @@ def _regroup_aligned_segments(segments: list[dict], language: str) -> tuple[list
             return
         sentence_segments = _segment_words_with_pysbd(current_words, language)
         if not sentence_segments:
-            sentence_segments = _regroup_words_by_punctuation(current_words)
+            sentence_segments = _regroup_words_by_punctuation(current_words, language)
         pysbd_segments.extend(sentence_segments)
         current_words = []
 
@@ -896,6 +908,161 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
         ),
         None,
     )
+
+
+def align_known_text(
+    vocals_file: Path,
+    known_segments: list[dict],
+    language: str,
+    *,
+    task_id: str | None = None,
+    run_id: int | None = None,
+) -> dict:
+    from pydub import AudioSegment
+    import whisperx
+
+    if WHISPER_ENGINE != "whisperx":
+        raise RuntimeError("Known-text alignment requires the whisperx engine.")
+    if not WHISPERX_ALIGN:
+        raise RuntimeError("Known-text alignment requires WhisperX alignment to be enabled.")
+
+    duration_ms = len(AudioSegment.from_file(vocals_file))
+    transcript = []
+    previous_end = 0
+    for expected_index, segment in enumerate(known_segments):
+        item_index = int(segment.get("item_index"))
+        status = str(segment.get("status") or "").strip().lower()
+        text = str(segment.get("text") or "").strip()
+        start_time = int(segment.get("start_time") or 0)
+        end_time = int(segment.get("end_time") or 0)
+        if item_index != expected_index:
+            raise ValueError(
+                f"Narration segment indexes are not contiguous at {item_index}."
+            )
+        if status and status != "success":
+            raise ValueError(
+                f"Narration segment {item_index} is not successful: {status}."
+            )
+        if not text:
+            raise ValueError(f"Narration segment {item_index} has empty text.")
+        if (
+            start_time < previous_end
+            or end_time <= start_time
+            or end_time > duration_ms + 20
+        ):
+            raise ValueError(
+                f"Narration segment {item_index} has invalid timing "
+                f"{start_time}-{end_time} for audio duration {duration_ms}."
+            )
+        end_time = min(end_time, duration_ms)
+        transcript.append(
+            {
+                "text": text,
+                "start": start_time / 1000.0,
+                "end": end_time / 1000.0,
+            }
+        )
+        previous_end = end_time
+
+    runtime_device = _runtime_device_for_engine()
+    audio = whisperx.load_audio(str(vocals_file))
+    raw_result = {
+        "segments": transcript,
+        "text": _word_separator(language).join(
+            segment["text"] for segment in transcript
+        ),
+        "language": language,
+    }
+    if run_id is not None:
+        db.update_whisper_run_runtime(
+            run_id,
+            runtime_device=runtime_device,
+            model_path=WHISPERX_ALIGN_MODEL or "default-align-model",
+            input_duration_ms=duration_ms,
+        )
+
+    raw_segment_ids: dict[int, int] = {}
+    if task_id is not None and run_id is not None:
+        raw_segment_ids = db.save_whisper_raw_segments(
+            run_id, task_id, raw_result["segments"]
+        )
+
+    aligned_result = _align_whisperx_result(
+        whisperx,
+        raw_result,
+        audio,
+        language,
+        runtime_device,
+        task_id=task_id,
+    )
+    aligned_segments = aligned_result.get("segments") or []
+    _assign_word_indexes(aligned_segments)
+    word_ids: dict[int, int] = {}
+    aligned_segment_ids: dict[int, int] = {}
+    if task_id is not None and run_id is not None:
+        aligned_segment_ids = db.save_whisper_aligned_segments(
+            run_id,
+            task_id,
+            aligned_segments,
+            raw_segment_ids,
+        )
+        for segment_index, segment in enumerate(aligned_segments):
+            segment["_whisper_aligned_segment_id"] = aligned_segment_ids.get(
+                segment_index
+            )
+            for word in segment.get("words") or []:
+                word["_whisper_aligned_segment_id"] = aligned_segment_ids.get(
+                    segment_index
+                )
+        word_ids = db.save_whisper_aligned_words(
+            run_id, task_id, aligned_segments, aligned_segment_ids
+        )
+        for segment in aligned_segments:
+            for word in segment.get("words") or []:
+                global_index = word.get("_whisper_word_global_index")
+                if global_index in word_ids:
+                    word["_whisper_aligned_word_id"] = word_ids[global_index]
+
+    pysbd_segments, final_segments = _regroup_aligned_segments(
+        aligned_segments, language
+    )
+    if task_id is not None and run_id is not None:
+        for segment in pysbd_segments:
+            aligned_index = segment.get("_whisper_aligned_segment_index")
+            if aligned_index is not None:
+                segment["_whisper_aligned_segment_id"] = aligned_segment_ids.get(
+                    int(aligned_index)
+                )
+        pysbd_segment_ids = db.save_whisper_pysbd_segments(
+            run_id, task_id, pysbd_segments, word_ids
+        )
+        split_ids = db.save_whisper_splits(
+            run_id,
+            task_id,
+            final_segments,
+            pysbd_segment_ids,
+            word_ids,
+        )
+        for segment_index, segment in enumerate(final_segments):
+            segment["_whisper_split_id"] = split_ids.get(segment_index)
+            for word in segment.get("words") or []:
+                global_index = word.get("_whisper_word_global_index")
+                if global_index in word_ids:
+                    word["_whisper_aligned_word_id"] = word_ids[global_index]
+
+    utterances = _convert_segments(final_segments)
+    if not utterances:
+        raise RuntimeError("Known-text alignment did not return any segments.")
+    return {
+        "audio_info": {"duration": duration_ms},
+        "result": {
+            "text": _word_separator(language).join(
+                str(segment.get("text") or "").strip()
+                for segment in final_segments
+            ),
+            "utterances": utterances,
+        },
+    }
 
 
 def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id: str | None = None, run_id: int | None = None) -> dict:

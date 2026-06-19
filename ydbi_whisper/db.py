@@ -719,6 +719,25 @@ def get_task(task_id: str) -> dict[str, Any] | None:
         return task
 
 
+def list_narration_alignment_segments(task_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT ss.item_index, ss.status, ss.dst_text AS text,
+                   cvs.start_time, cvs.end_time
+            FROM speaker_segment ss
+            LEFT JOIN combiner_vocal_speed cvs
+              ON cvs.task_id = ss.task_id
+             AND cvs.segment_id = ss.item_index
+            WHERE ss.task_id = %s
+            ORDER BY ss.item_index ASC
+            """,
+            (task_id,),
+        )
+        return list(cur.fetchall())
+
+
 def demucs_operator_for(task_id: str) -> str | None:
     with connect() as conn:
         cur = _dict_cursor(conn)

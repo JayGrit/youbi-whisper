@@ -10,7 +10,7 @@ from ydbi_whisper import db
 from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
-from ydbi_whisper.whisper_asr import NoSpeechDetected, recognize_speech
+from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
 # 当前模块的 logger，用于输出 whisper 阶段的运行日志
@@ -125,13 +125,27 @@ def handle(row: dict) -> dict[str, Any]:
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
         try:
-            data = recognize_speech(
-                vocals,
-                session,
-                language=asr_language,
-                task_id=task_id,
-                run_id=run_id,
-            )
+            if narration_task:
+                known_segments = db.list_narration_alignment_segments(task_id)
+                if not known_segments:
+                    raise RuntimeError(
+                        f"narration alignment segments are missing for task: {task_id}"
+                    )
+                data = align_known_text(
+                    vocals,
+                    known_segments,
+                    language=asr_language,
+                    task_id=task_id,
+                    run_id=run_id,
+                )
+            else:
+                data = recognize_speech(
+                    vocals,
+                    session,
+                    language=asr_language,
+                    task_id=task_id,
+                    run_id=run_id,
+                )
         except NoSpeechDetected:
             log.warning("任务 %s：未检测到有效语音，已跳过字幕处理", task_id)
             db.finish_whisper_run(run_id, "success")
