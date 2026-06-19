@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import types
 import unittest
 from pathlib import Path
@@ -10,6 +11,40 @@ from ydbi_whisper import whisper_asr
 
 
 class KnownTextAlignmentTests(unittest.TestCase):
+    def test_old_whisperx_loads_huggingface_model_from_local_snapshot(self) -> None:
+        calls = []
+
+        def load_align_model(*args, **kwargs):
+            calls.append((args, kwargs))
+            if "model_cache_only" in kwargs:
+                raise TypeError(
+                    "load_align_model() got an unexpected keyword argument "
+                    "'model_cache_only'"
+                )
+            return "model", {"language": "zh"}
+
+        fake_whisperx = types.SimpleNamespace(
+            load_align_model=load_align_model,
+            alignment=types.SimpleNamespace(
+                DEFAULT_ALIGN_MODELS_HF={"zh": "owner/chinese-align"}
+            ),
+        )
+        with tempfile.TemporaryDirectory() as temp_dir:
+            repo = Path(temp_dir) / "models--owner--chinese-align"
+            (repo / "refs").mkdir(parents=True)
+            (repo / "refs" / "main").write_text("revision-1", encoding="utf-8")
+            snapshot = repo / "snapshots" / "revision-1"
+            snapshot.mkdir(parents=True)
+            with mock.patch.object(
+                whisper_asr, "WHISPERX_ALIGN_MODEL_DIR", temp_dir
+            ):
+                result = whisper_asr._load_align_model(fake_whisperx, "zh", "cpu")
+
+        self.assertEqual(("model", {"language": "zh"}), result)
+        self.assertEqual(2, len(calls))
+        self.assertEqual(str(snapshot), calls[1][1]["model_name"])
+        self.assertNotIn("model_cache_only", calls[1][1])
+
     def test_align_model_uses_local_cache_and_is_reused(self) -> None:
         fake_whisperx = types.SimpleNamespace(
             load_align_model=mock.Mock(return_value=("model", {"language": "zh"})),

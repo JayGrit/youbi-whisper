@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import importlib
 import re
 from pathlib import Path
 
@@ -789,6 +790,57 @@ def _regroup_aligned_segments(segments: list[dict], language: str) -> tuple[list
     return pysbd_segments, long_split_segments
 
 
+def _local_align_model_name(whisperx, language: str) -> str | None:
+    configured_model = WHISPERX_ALIGN_MODEL or None
+    if configured_model and Path(configured_model).expanduser().exists():
+        return str(Path(configured_model).expanduser())
+
+    alignment_module = getattr(whisperx, "alignment", None)
+    if alignment_module is None:
+        alignment_module = importlib.import_module("whisperx.alignment")
+    hf_models = getattr(alignment_module, "DEFAULT_ALIGN_MODELS_HF", {})
+    model_name = configured_model or hf_models.get(language)
+    if not model_name or "/" not in model_name:
+        return model_name
+
+    cache_root = Path(WHISPERX_ALIGN_MODEL_DIR).expanduser()
+    repo_cache = cache_root / f"models--{model_name.replace('/', '--')}"
+    main_ref = repo_cache / "refs" / "main"
+    if not main_ref.is_file():
+        raise RuntimeError(
+            "WhisperX align model is not available in the local cache: "
+            f"model={model_name}, dir={cache_root}"
+        )
+    revision = main_ref.read_text(encoding="utf-8").strip()
+    snapshot = repo_cache / "snapshots" / revision
+    if not snapshot.is_dir():
+        raise RuntimeError(
+            "WhisperX align model snapshot is missing from the local cache: "
+            f"model={model_name}, revision={revision}, dir={cache_root}"
+        )
+    return str(snapshot)
+
+
+def _load_align_model(whisperx, language: str, runtime_device: str):
+    kwargs = {
+        "model_name": WHISPERX_ALIGN_MODEL or None,
+        "model_dir": WHISPERX_ALIGN_MODEL_DIR,
+    }
+    try:
+        return whisperx.load_align_model(
+            language,
+            runtime_device,
+            model_cache_only=WHISPERX_ALIGN_LOCAL_FILES_ONLY,
+            **kwargs,
+        )
+    except TypeError as exc:
+        if "model_cache_only" not in str(exc):
+            raise
+        if WHISPERX_ALIGN_LOCAL_FILES_ONLY:
+            kwargs["model_name"] = _local_align_model_name(whisperx, language)
+        return whisperx.load_align_model(language, runtime_device, **kwargs)
+
+
 def _align_whisperx_result(
     whisperx,
     result: dict,
@@ -820,12 +872,8 @@ def _align_whisperx_result(
     cached_align = _ALIGN_MODELS.get(align_key)
     if cached_align is None:
         try:
-            cached_align = whisperx.load_align_model(
-                align_language,
-                runtime_device,
-                model_name=WHISPERX_ALIGN_MODEL or None,
-                model_dir=WHISPERX_ALIGN_MODEL_DIR,
-                model_cache_only=WHISPERX_ALIGN_LOCAL_FILES_ONLY,
+            cached_align = _load_align_model(
+                whisperx, align_language, runtime_device
             )
         except (OSError, ValueError) as exc:
             if WHISPERX_ALIGN_LOCAL_FILES_ONLY:
