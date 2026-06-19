@@ -302,9 +302,7 @@ def _narration_segments_without_punctuation_timing(
                 return
             caption = _segment_from_words(current_words, language)
             if caption is not None:
-                caption["text"] = (
-                    _join_word_texts(current_words, language) + trailing_punctuation
-                )
+                caption["text"] = _join_word_texts(current_words, language)
                 caption["_whisper_aligned_segment_index"] = aligned_index
                 caption["_whisper_segmentation_method"] = (
                     "narration_punctuation_gap"

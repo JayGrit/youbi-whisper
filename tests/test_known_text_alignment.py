@@ -108,8 +108,8 @@ class KnownTextAlignmentTests(unittest.TestCase):
         )
         self.assertEqual(
             [
-                ("AAAAA,", 0.1, 0.8),
-                ("BBBBB。", 1.2, 2.0),
+                ("AAAAA", 0.1, 0.8),
+                ("BBBBB", 1.2, 2.0),
             ],
             [
                 (segment["text"], segment["start"], segment["end"])
@@ -174,7 +174,7 @@ class KnownTextAlignmentTests(unittest.TestCase):
             [{"text": "其实。", "start": 0.25, "end": 1.1}],
             transcript,
         )
-        self.assertEqual("其实。", payload["result"]["text"])
+        self.assertEqual("其实", payload["result"]["text"])
         self.assertEqual(
             [
                 ("其", 250, 500),
