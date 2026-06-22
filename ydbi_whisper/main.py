@@ -10,6 +10,8 @@ from ydbi_whisper import db
 from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
+from ydbi_whisper.storage import upload
+from ydbi_whisper.local_export import render_txt
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -40,9 +42,10 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
 
     # 从任务行中取出人声音频的远程地址
     # 这里一般是 MinIO 或其他对象存储中的 audio_vocals_url
+    source_transcription = str(row.get("sub_stage") or "main") == "source_transcription"
     narration_audio_url = (
         str(row.get("audio_dubbing_url") or "").strip()
-        if str(row.get("task_type") or "").strip().lower() == "narration"
+        if str(row.get("task_type") or "").strip().lower() == "narration" and not source_transcription
         else ""
     )
     audio_vocals_url = narration_audio_url or str(row.get("audio_vocals_url") or "").strip()
@@ -77,6 +80,7 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
 def handle(row: dict) -> dict[str, Any]:
     # 当前 whisper 阶段处理的任务 ID
     task_id = row["task_id"]
+    sub_stage = str(row.get("sub_stage") or "main")
 
     # 获取当前任务的本地工作目录
     # 后续会在这个目录下存放临时音频、metadata 等文件
@@ -95,7 +99,8 @@ def handle(row: dict) -> dict[str, Any]:
         # source 中一般会包含 asr_language 等配置
         source_url = str(task.get("source_url") or "").strip()
         narration_task = str(row.get("task_type") or "").strip().lower() == "narration"
-        if narration_task:
+        source_transcription = sub_stage == "source_transcription"
+        if narration_task and not source_transcription:
             asr_language = "zh"
             source_name = "narration"
         else:
@@ -109,7 +114,8 @@ def handle(row: dict) -> dict[str, Any]:
             language=asr_language,
             source_url=source_url or source_name,
             input_audio_url=str(
-                row.get("audio_dubbing_url")
+                (row.get("audio_source_url") if source_transcription else None)
+                or row.get("audio_dubbing_url")
                 or row.get("audio_vocals_url")
                 or row.get("audio_source_url")
                 or ""
@@ -117,6 +123,7 @@ def handle(row: dict) -> dict[str, Any]:
             input_local_path=str(vocals),
             input_file_size=vocals.stat().st_size,
             input_sha256=_sha256(vocals),
+            sub_stage=sub_stage,
         )
 
         log.info("任务 %s：正在识别语音", task_id)
@@ -125,7 +132,7 @@ def handle(row: dict) -> dict[str, Any]:
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
         try:
-            if narration_task:
+            if narration_task and not source_transcription:
                 known_segments = db.list_narration_alignment_segments(task_id)
                 if not known_segments:
                     raise RuntimeError(
@@ -147,13 +154,31 @@ def handle(row: dict) -> dict[str, Any]:
                     run_id=run_id,
                 )
         except NoSpeechDetected:
+            if source_transcription:
+                raise RuntimeError("没有原生字幕且未识别到语音")
             log.warning("任务 %s：未检测到有效语音，已跳过字幕处理", task_id)
             db.finish_whisper_run(run_id, "success")
             return {}
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
-        asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
+        if source_transcription:
+            result = data.get("result") or {}
+            duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
+            from ydbi_whisper.asr_segments import fix_asr_segment_rows
+            asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
+            transcript = render_txt(asr_segments, str(result.get("text") or ""))
+            if not transcript.strip():
+                raise RuntimeError("没有原生字幕且未识别到语音")
+            transcript_path = session / "source_transcription.txt"
+            transcript_path.write_text(transcript, encoding="utf-8")
+            transcript_url = upload(
+                transcript_path,
+                f"{task_id}/whisper/source_transcription.txt",
+                "text/plain; charset=utf-8",
+            )
+        else:
+            asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
 
         # 统计所有 ASR segment 中的词级时间戳数量
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
@@ -178,6 +203,8 @@ def handle(row: dict) -> dict[str, Any]:
 
     # ASR 结果在数据库中的引用地址
     # 这里不是实际文件路径，而是一个逻辑引用，表示从 asr_segment 表读取该任务分段
+    if sub_stage == "source_transcription":
+        return {"source_transcript_txt_url": transcript_url}
     asr_ref = f"db://asr_segment/{task_id}"
 
     log.debug("任务 %s 识别结果：%s", task_id, asr_ref)

@@ -56,17 +56,18 @@ def run_polling_worker(handler: Handler) -> None:
             continue
 
         task_id = row["task_id"]
-        if not db.mark_running(stage_name, task_id):
+        sub_stage = str(row.get("sub_stage") or "main")
+        if not db.mark_running(stage_name, task_id, sub_stage):
             continue
 
         log.info("任务 %s：开始处理", task_id)
         heartbeat_stop = _start_task_heartbeat(stage_name)
         try:
             outputs = handler(row) or {}
-            db.mark_success(stage_name, task_id, outputs)
+            db.mark_success(stage_name, task_id, outputs, sub_stage)
             log.info("任务 %s：处理完成", task_id)
         except Exception as exc:
             log.exception("任务 %s：处理失败", task_id)
-            db.mark_failed(stage_name, task_id, str(exc))
+            db.mark_failed(stage_name, task_id, str(exc), sub_stage)
         finally:
             heartbeat_stop.set()

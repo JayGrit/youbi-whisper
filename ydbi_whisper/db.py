@@ -200,23 +200,25 @@ def create_whisper_run(
     input_local_path: str,
     input_file_size: int,
     input_sha256: str,
+    sub_stage: str = "main",
 ) -> int:
     with connect() as conn:
         cur = conn.cursor()
         cur.execute(
             """
             INSERT INTO whisper_run
-              (task_id, language, source_url, engine, model, configured_device, input_audio_url,
+              (task_id, sub_stage, language, source_url, engine, model, configured_device, input_audio_url,
                input_local_path, input_file_size, input_sha256, batch_size, chunk_size,
                compute_type, vad_method, vad_onset, vad_offset, align_enabled,
                align_model, align_model_dir, align_interpolate_method, regroup_max_chars,
                regroup_max_duration_ms, status, operator)
             VALUES
               (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-               %s, %s, %s, %s, 'running', %s)
+               %s, %s, %s, %s, %s, 'running', %s)
             """,
             (
                 task_id,
+                sub_stage,
                 language,
                 source_url,
                 WHISPER_ENGINE,
@@ -761,7 +763,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             JOIN task t ON t.id = s.task_id
             WHERE s.status = %s
               AND t.status <> 'failed'
-            ORDER BY s.task_id ASC
+            ORDER BY s.task_id ASC, s.sub_stage ASC
             LIMIT 1
             """,
             (READY,),
@@ -769,7 +771,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
         return video_info.merge_into(cur.fetchone())
 
 
-def mark_running(stage_name: str, task_id: str) -> bool:
+def mark_running(stage_name: str, task_id: str, sub_stage: str = "main") -> bool:
     table = _service_table_for(stage_name)
     operator = _operator_value()
     with connect() as conn:
@@ -782,13 +784,13 @@ def mark_running(stage_name: str, task_id: str) -> bool:
                 started_at = COALESCE(started_at, NOW()),
                 error_message = NULL,
                 `operator` = %s
-            WHERE task_id = %s AND status = %s
+            WHERE task_id = %s AND sub_stage = %s AND status = %s
               AND EXISTS (
                   SELECT 1 FROM task t
                   WHERE t.id = %s AND t.status <> 'failed'
               )
             """,
-            (RUNNING, operator, task_id, READY, task_id),
+            (RUNNING, operator, task_id, sub_stage, READY, task_id),
         )
         stage_updated = cur.rowcount == 1
         if stage_updated:
@@ -846,7 +848,7 @@ def set_translator_asr_json_path(task_id: str, asr_json_path: str) -> None:
     video_info.upsert(task_id, {"asr_json_path": asr_json_path})
 
 
-def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | None = None) -> None:
+def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | None = None, sub_stage: str = "main") -> None:
     table = _service_table_for(stage_name)
     fields = dict(outputs or {})
     stage_fields = {key: value for key, value in fields.items() if key not in video_info.COLUMNS}
@@ -855,7 +857,7 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
     for key, value in stage_fields.items():
         assignments.append(f"{key} = %s")
         values.append(value)
-    values.append(task_id)
+    values.extend((task_id, sub_stage))
 
     with connect() as conn:
         cur = conn.cursor()
@@ -869,13 +871,13 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
         # result and output references so the stage does not remain running.
         video_info.upsert(task_id, fields, cur)
         cur.execute(
-            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s",
+            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND sub_stage = %s",
             values,
         )
         conn.commit()
 
 
-def mark_failed(stage_name: str, task_id: str, message: str) -> None:
+def mark_failed(stage_name: str, task_id: str, message: str, sub_stage: str = "main") -> None:
     table = _service_table_for(stage_name)
     with connect() as conn:
         cur = conn.cursor()
@@ -886,9 +888,9 @@ def mark_failed(stage_name: str, task_id: str, message: str) -> None:
             f"""
             UPDATE {table}
             SET status = %s, error_message = %s, completed_at = NOW()
-            WHERE task_id = %s
+            WHERE task_id = %s AND sub_stage = %s
             """,
-            (FAILED, message, task_id),
+            (FAILED, message, task_id, sub_stage),
         )
         cur.execute(
             """

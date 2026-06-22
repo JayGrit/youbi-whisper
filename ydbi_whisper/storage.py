@@ -14,6 +14,7 @@ from .config import (
     MINIO_ENDPOINT,
     MINIO_SECRET_KEY,
     MINIO_SECURE,
+    MINIO_FULL_BASE_URL,
 )
 
 
@@ -87,3 +88,13 @@ def download(ref: str | Path, destination: Path) -> Path:
             f"input does not exist locally or in minio: {source}; tried "
             f"s3://{object_info.bucket}/{object_info.object_name}: {exc.code}"
         ) from exc
+
+
+def upload(source: Path, object_name: str, content_type: str = "application/octet-stream") -> str:
+    if not source.exists() or source.stat().st_size == 0:
+        raise FileNotFoundError(f"output does not exist or is empty: {source}")
+    client = _minio_client()
+    if not client.bucket_exists(MINIO_BUCKET):
+        client.make_bucket(MINIO_BUCKET)
+    client.fput_object(MINIO_BUCKET, object_name, str(source), content_type=content_type)
+    return f"{MINIO_FULL_BASE_URL.rstrip('/')}/{MINIO_BUCKET}/{object_name.lstrip('/')}"
