@@ -861,9 +861,12 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
         cur = conn.cursor()
         cur.execute("SELECT status FROM task WHERE id = %s", (task_id,))
         task_row = cur.fetchone()
-        if not task_row or task_row[0] == "failed":
+        if not task_row:
             conn.commit()
             return
+        # A different pipeline stage may fail while Whisper is still running.
+        # Keep the task-level failure, but persist Whisper's own successful
+        # result and output references so the stage does not remain running.
         video_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s",
