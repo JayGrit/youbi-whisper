@@ -12,6 +12,7 @@ from urllib.parse import urlparse
 
 from .asr_segments import fix_asr_segment_rows
 from .config import TEST_API_HOST, TEST_API_PORT, task_work_dir
+from .logging_utils import configure_dependency_logging
 from .whisper_asr import current_asr_config, recognize_speech
 
 log = logging.getLogger(__name__)
@@ -112,6 +113,7 @@ class WhisperTestHandler(BaseHTTPRequestHandler):
 
 def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
+    configure_dependency_logging()
     server = ThreadingHTTPServer((TEST_API_HOST, TEST_API_PORT), WhisperTestHandler)
     log.info("whisper test api listening on http://%s:%s", TEST_API_HOST, TEST_API_PORT)
     server.serve_forever()

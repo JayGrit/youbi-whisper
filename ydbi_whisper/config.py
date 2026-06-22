@@ -34,6 +34,9 @@ HF_HOME = Path(os.environ.get("HF_HOME", MODEL_ROOT / "huggingface")).expanduser
 os.environ.setdefault("HF_HOME", str(HF_HOME))
 os.environ.setdefault("HUGGINGFACE_HUB_CACHE", str(HF_HOME / "hub"))
 os.environ.setdefault("TRANSFORMERS_CACHE", str(HF_HOME / "transformers"))
+os.environ.setdefault("HF_HUB_DISABLE_PROGRESS_BARS", "1")
+os.environ.setdefault("TRANSFORMERS_NO_ADVISORY_WARNINGS", "1")
+os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 XDG_CACHE_HOME = Path(os.environ.get("XDG_CACHE_HOME", MODEL_ROOT / "cache")).expanduser()
 os.environ.setdefault("XDG_CACHE_HOME", str(XDG_CACHE_HOME))
 

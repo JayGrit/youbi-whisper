@@ -12,6 +12,7 @@ from typing import Any
 
 from . import db
 from .config import task_work_dir
+from .logging_utils import configure_dependency_logging
 from .whisper_asr import current_asr_config, recognize_speech
 
 log = logging.getLogger(__name__)
@@ -25,16 +26,7 @@ def configure_logging(*, debug: bool = False) -> None:
         stream=sys.stdout,
         force=True,
     )
-    for name in (
-        "faster_whisper",
-        "huggingface_hub",
-        "pyannote",
-        "speechbrain",
-        "torch",
-        "urllib3",
-        "whisperx",
-    ):
-        logging.getLogger(name).setLevel(level)
+    configure_dependency_logging(debug=debug)
 
 
 def _sha256(path: Path) -> str:

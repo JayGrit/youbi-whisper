@@ -165,8 +165,11 @@ def _load_model():
         if WHISPER_ENGINE == "whisperx":
             import whisperx
 
+            model_name_or_path = _model_name_or_path()
+            if not Path(model_name_or_path).expanduser().exists():
+                log.info("正在下载语音识别模型 %s（首次使用）", WHISPER_MODEL)
             _MODEL = whisperx.load_model(
-                _model_name_or_path(),
+                model_name_or_path,
                 runtime_device,
                 compute_type=WHISPERX_COMPUTE_TYPE,
                 language=None,
@@ -188,6 +191,14 @@ def _load_model():
 
         # 延迟导入 whisper，避免模块加载时就引入较重的依赖
         import whisper
+
+        model_file = (
+            Path(WHISPER_DOWNLOAD_ROOT).expanduser() / f"{WHISPER_MODEL}.pt"
+            if WHISPER_DOWNLOAD_ROOT
+            else None
+        )
+        if model_file is not None and not model_file.is_file():
+            log.info("正在下载语音识别模型 %s（首次使用）", WHISPER_MODEL)
 
         # 加载 Whisper 模型
         # WHISPER_MODEL：模型名称，例如 tiny/base/small/medium/large 等
@@ -445,6 +456,9 @@ def _wtpsplit_model():
         return None
     try:
         from wtpsplit import SaT
+        from transformers.utils.logging import disable_progress_bar
+
+        disable_progress_bar()
     except Exception as exc:
         try:
             from wtpsplit import WtP
@@ -464,7 +478,52 @@ def _wtpsplit_model():
         return _WTPSPLIT_MODEL
 
     try:
-        _WTPSPLIT_MODEL = SaT("sat-3l-sm")
+        model_name: str | Path = "sat-3l-sm"
+        tokenizer_name: str | Path = "facebookAI/xlm-roberta-base"
+        from_pretrained_kwargs = None
+
+        try:
+            from huggingface_hub import snapshot_download
+
+            model_snapshot = Path(
+                snapshot_download(
+                    "segment-any-text/sat-3l-sm",
+                    local_files_only=True,
+                )
+            )
+            tokenizer_snapshot = Path(
+                snapshot_download(
+                    "facebookAI/xlm-roberta-base",
+                    local_files_only=True,
+                )
+            )
+            model_is_complete = (
+                (model_snapshot / "config.json").is_file()
+                and any(
+                    (model_snapshot / filename).is_file()
+                    for filename in ("model.safetensors", "pytorch_model.bin")
+                )
+            )
+            tokenizer_is_complete = (
+                (tokenizer_snapshot / "tokenizer_config.json").is_file()
+                and any(
+                    (tokenizer_snapshot / filename).is_file()
+                    for filename in ("tokenizer.json", "sentencepiece.bpe.model")
+                )
+            )
+            if not model_is_complete or not tokenizer_is_complete:
+                raise FileNotFoundError("incomplete wtpsplit cache")
+            model_name = model_snapshot
+            tokenizer_name = tokenizer_snapshot
+            from_pretrained_kwargs = {"local_files_only": True}
+        except Exception:
+            log.info("正在下载语义分句模型 sat-3l-sm（首次使用）")
+
+        _WTPSPLIT_MODEL = SaT(
+            model_name,
+            tokenizer_name_or_path=tokenizer_name,
+            from_pretrained_kwargs=from_pretrained_kwargs,
+        )
     except Exception as exc:
         _WTPSPLIT_UNAVAILABLE = True
         log.warning("语义分句模型加载失败，长句将保持原样")

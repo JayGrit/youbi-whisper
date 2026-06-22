@@ -8,6 +8,7 @@ from typing import Any
 
 from . import db
 from .config import POLL_INTERVAL_SECONDS
+from .logging_utils import configure_dependency_logging
 from .service import SERVICE_NAME
 
 log = logging.getLogger(__name__)
@@ -37,8 +38,7 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
 def run_polling_worker(handler: Handler) -> None:
     stage_name = SERVICE_NAME
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(message)s")
-    for logger_name in ("faster_whisper", "huggingface_hub", "pyannote", "speechbrain", "torch", "urllib3", "whisperx"):
-        logging.getLogger(logger_name).setLevel(logging.WARNING)
+    configure_dependency_logging()
     log.info("语音识别服务已启动")
     while True:
         try:

@@ -11,6 +11,7 @@ from typing import Any
 
 from .asr_segments import fix_asr_segment_rows
 from .config import task_work_dir
+from .logging_utils import configure_dependency_logging
 from .whisper_asr import current_asr_config, recognize_speech
 
 log = logging.getLogger(__name__)
@@ -24,6 +25,7 @@ def configure_logging(*, debug: bool = False) -> None:
         stream=sys.stdout,
         force=True,
     )
+    configure_dependency_logging(debug=debug)
 
 
 def _srt_timestamp(ms: int) -> str:
