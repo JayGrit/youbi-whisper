@@ -36,7 +36,7 @@ class _Connection:
 
 
 class NoSpeechPipelineTest(unittest.TestCase):
-    def test_whisper_success_skips_subtitle_stages_and_readies_uploader(self) -> None:
+    def test_whisper_success_marks_only_current_sub_stage(self) -> None:
         connection = _Connection()
         with (
             patch.object(db, "connect", return_value=connection),
@@ -49,12 +49,12 @@ class NoSpeechPipelineTest(unittest.TestCase):
             )
 
         sql = "\n".join(statement for statement, _ in connection.cursor_instance.statements)
-        self.assertIn("UPDATE translator", sql)
-        self.assertIn("UPDATE speaker", sql)
-        self.assertIn("UPDATE combiner", sql)
-        self.assertIn("UPDATE uploader", sql)
-        self.assertIn("current_stage = 'uploader'", sql)
-        self.assertNotIn("UPDATE translator SET status = %s WHERE task_id = %s AND status = 'pending'", sql)
+        self.assertIn("UPDATE whisper SET", sql)
+        self.assertIn("WHERE task_id = %s AND sub_stage = %s", sql)
+        self.assertNotIn("UPDATE translator", sql)
+        self.assertNotIn("UPDATE speaker", sql)
+        self.assertNotIn("UPDATE combiner", sql)
+        self.assertNotIn("UPDATE uploader", sql)
         self.assertTrue(connection.committed)
         upsert.assert_called_once_with(
             "task-1",

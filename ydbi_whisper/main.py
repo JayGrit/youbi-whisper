@@ -43,23 +43,34 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     # 从任务行中取出人声音频的远程地址
     # 这里一般是 MinIO 或其他对象存储中的 audio_vocals_url
     source_transcription = str(row.get("sub_stage") or "main") == "source_transcription"
+    task_type = str(row.get("task_type") or "").strip().lower()
+    dubbing_alignment = str(row.get("sub_stage") or "main") == "dubbing_alignment"
     narration_audio_url = (
         str(row.get("audio_dubbing_url") or "").strip()
-        if str(row.get("task_type") or "").strip().lower() == "narration" and not source_transcription
+        if task_type == "narration" and not source_transcription
         else ""
     )
-    audio_vocals_url = narration_audio_url or str(row.get("audio_vocals_url") or "").strip()
+    dubbing_alignment_audio_url = (
+        str(row.get("audio_dubbing_url") or "").strip()
+        if task_type == "dubbing_multi_segment" and dubbing_alignment
+        else ""
+    )
+    audio_vocals_url = dubbing_alignment_audio_url or narration_audio_url or str(row.get("audio_vocals_url") or "").strip()
     input_url = audio_vocals_url
     input_label = "vocals"
     if not input_url:
         input_url = str(row.get("audio_source_url") or "").strip()
         input_label = "source audio"
+    elif dubbing_alignment_audio_url:
+        input_label = "dubbing alignment audio"
     elif narration_audio_url:
         input_label = "narration audio"
 
     # 如果没有人声音频地址，说明上游 demucs 或下载阶段没有正确产出 vocals
     if not input_url:
         raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
+    if dubbing_alignment and not dubbing_alignment_audio_url:
+        raise FileNotFoundError(f"audio_dubbing_url is missing for dubbing alignment task: {task_id}")
 
     # 计算本地下载目标路径
     destination = _download_destination(session, input_url)
@@ -98,11 +109,13 @@ def handle(row: dict) -> dict[str, Any]:
         # 根据任务的 source_url 判断来源
         # source 中一般会包含 asr_language 等配置
         source_url = str(task.get("source_url") or "").strip()
-        narration_task = str(row.get("task_type") or "").strip().lower() == "narration"
+        task_type = str(row.get("task_type") or "").strip().lower()
+        narration_task = task_type == "narration"
+        dubbing_alignment = task_type == "dubbing_multi_segment" and sub_stage == "dubbing_alignment"
         source_transcription = sub_stage == "source_transcription"
-        if narration_task and not source_transcription:
+        if (narration_task and not source_transcription) or dubbing_alignment:
             asr_language = "zh"
-            source_name = "narration"
+            source_name = "dubbing_alignment" if dubbing_alignment else "narration"
         else:
             if not source_url:
                 raise ValueError(f"source_url is missing for task: {task_id}")
@@ -132,11 +145,15 @@ def handle(row: dict) -> dict[str, Any]:
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
         try:
-            if narration_task and not source_transcription:
-                known_segments = db.list_narration_alignment_segments(task_id)
+            if (narration_task and not source_transcription) or dubbing_alignment:
+                known_segments = (
+                    db.list_dubbing_alignment_segments(task_id)
+                    if dubbing_alignment
+                    else db.list_narration_alignment_segments(task_id)
+                )
                 if not known_segments:
                     raise RuntimeError(
-                        f"narration alignment segments are missing for task: {task_id}"
+                        f"known-text alignment segments are missing for task: {task_id}"
                     )
                 data = align_known_text(
                     vocals,
@@ -178,7 +195,15 @@ def handle(row: dict) -> dict[str, Any]:
                 "text/plain; charset=utf-8",
             )
         else:
-            asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
+            if dubbing_alignment:
+                asr_segments = db.save_dubbing_alignment_result(
+                    task_id,
+                    data,
+                    run_id=run_id,
+                    known_segments=known_segments,
+                )
+            else:
+                asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
 
         # 统计所有 ASR segment 中的词级时间戳数量
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
@@ -205,6 +230,8 @@ def handle(row: dict) -> dict[str, Any]:
     # 这里不是实际文件路径，而是一个逻辑引用，表示从 asr_segment 表读取该任务分段
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
+    if sub_stage == "dubbing_alignment":
+        return {"asr_json_path": f"db://dubbing_multi_segment_alignment/{task_id}"}
     asr_ref = f"db://asr_segment/{task_id}"
 
     log.debug("任务 %s 识别结果：%s", task_id, asr_ref)

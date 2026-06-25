@@ -456,9 +456,12 @@ def _wtpsplit_model():
         return None
     try:
         from wtpsplit import SaT
-        from transformers.utils.logging import disable_progress_bar
+        try:
+            from transformers.utils.logging import disable_progress_bar
 
-        disable_progress_bar()
+            disable_progress_bar()
+        except Exception:
+            pass
     except Exception as exc:
         try:
             from wtpsplit import WtP

@@ -40,6 +40,7 @@ OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 STAGE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
 _heartbeat_schema_ready = False
+DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE = "dubbing_multi_segment_alignment"
 
 
 def _row_value(row: Any, index: int = 0) -> Any:
@@ -688,6 +689,102 @@ def list_narration_alignment_segments(task_id: str) -> list[dict[str, Any]]:
             (task_id,),
         )
         return list(cur.fetchall())
+
+
+def list_dubbing_alignment_segments(task_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        cur.execute(
+            """
+            SELECT item_index, status, dst_text AS text,
+                   actual_start_time AS start_time, actual_end_time AS end_time
+            FROM speaker_segment
+            WHERE task_id = %s
+            ORDER BY item_index ASC
+            """,
+            (task_id,),
+        )
+        return list(cur.fetchall())
+
+
+def save_dubbing_alignment_result(
+    task_id: str,
+    payload: dict[str, Any],
+    run_id: int | None = None,
+    known_segments: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
+    audio_info = payload.get("audio_info") or {}
+    result = payload.get("result") or {}
+    duration_ms = int(audio_info.get("duration") or 0)
+    segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
+    known_segments = known_segments or []
+
+    def chunk_index_for(item: dict[str, Any]) -> int | None:
+        if not known_segments:
+            return None
+        midpoint = (int(item.get("start_time") or 0) + int(item.get("end_time") or 0)) // 2
+        nearest: tuple[int, int] | None = None
+        for known in known_segments:
+            index = int(known.get("item_index") or 0)
+            start = int(known.get("start_time") or 0)
+            end = int(known.get("end_time") or 0)
+            if start <= midpoint <= end:
+                return index
+            distance = min(abs(midpoint - start), abs(midpoint - end))
+            if nearest is None or distance < nearest[0]:
+                nearest = (distance, index)
+        return nearest[1] if nearest is not None else None
+
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"""
+            CREATE TABLE IF NOT EXISTS {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE} (
+              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+              task_id VARCHAR(64) NOT NULL,
+              item_index INT NOT NULL,
+              chunk_index INT NOT NULL DEFAULT 0,
+              text MEDIUMTEXT NOT NULL,
+              start_time INT NOT NULL,
+              end_time INT NOT NULL,
+              whisper_run_id BIGINT NULL,
+              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+              UNIQUE KEY uk_dubbing_multi_alignment_item (task_id, item_index),
+              KEY idx_dubbing_multi_alignment_task (task_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+            """
+        )
+        if not _staged_column_exists_cur(cur, DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE, "chunk_index"):
+            cur.execute(
+                f"""
+                ALTER TABLE {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE}
+                ADD COLUMN chunk_index INT NOT NULL DEFAULT 0 AFTER item_index
+                """
+            )
+        cur.execute(
+            f"DELETE FROM {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE} WHERE task_id = %s",
+            (task_id,),
+        )
+        for index, item in enumerate(segments):
+            cur.execute(
+                f"""
+                INSERT INTO {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE}
+                  (task_id, item_index, chunk_index, text, start_time, end_time, whisper_run_id)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """,
+                (
+                    task_id,
+                    index,
+                    chunk_index_for(item) or 0,
+                    str(item.get("text") or "").strip(),
+                    int(item.get("start_time") or 0),
+                    int(item.get("end_time") or 0),
+                    run_id,
+                ),
+            )
+        conn.commit()
+    return segments
 
 
 def demucs_operator_for(task_id: str) -> str | None:
