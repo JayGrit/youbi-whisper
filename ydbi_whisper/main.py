@@ -18,6 +18,13 @@ from ydbi_whisper.worker import run_polling_worker
 # 当前模块的 logger，用于输出 whisper 阶段的运行日志
 log = logging.getLogger(__name__)
 
+DUBBING_MULTI_SEGMENT_TASK_TYPE = "dubbing_multi_segment"
+DUBBING_CHUNK_ALIGNED_TASK_TYPE = "dubbing_chunk_aligned"
+DUBBING_ALIGNMENT_TASK_TYPES = {
+    DUBBING_MULTI_SEGMENT_TASK_TYPE,
+    DUBBING_CHUNK_ALIGNED_TASK_TYPE,
+}
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -52,7 +59,7 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     )
     dubbing_alignment_audio_url = (
         str(row.get("audio_dubbing_url") or "").strip()
-        if task_type == "dubbing_multi_segment" and dubbing_alignment
+        if task_type in DUBBING_ALIGNMENT_TASK_TYPES and dubbing_alignment
         else ""
     )
     audio_vocals_url = dubbing_alignment_audio_url or narration_audio_url or str(row.get("audio_vocals_url") or "").strip()
@@ -111,7 +118,7 @@ def handle(row: dict) -> dict[str, Any]:
         source_url = str(task.get("source_url") or "").strip()
         task_type = str(row.get("task_type") or "").strip().lower()
         narration_task = task_type == "narration"
-        dubbing_alignment = task_type == "dubbing_multi_segment" and sub_stage == "dubbing_alignment"
+        dubbing_alignment = task_type in DUBBING_ALIGNMENT_TASK_TYPES and sub_stage == "dubbing_alignment"
         source_transcription = sub_stage == "source_transcription"
         if (narration_task and not source_transcription) or dubbing_alignment:
             asr_language = "zh"
@@ -196,12 +203,15 @@ def handle(row: dict) -> dict[str, Any]:
             )
         else:
             if dubbing_alignment:
-                asr_segments = db.save_dubbing_alignment_result(
-                    task_id,
-                    data,
-                    run_id=run_id,
-                    known_segments=known_segments,
-                )
+                if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
+                    asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
+                else:
+                    asr_segments = db.save_dubbing_alignment_result(
+                        task_id,
+                        data,
+                        run_id=run_id,
+                        known_segments=known_segments,
+                    )
             else:
                 asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
 
@@ -231,6 +241,8 @@ def handle(row: dict) -> dict[str, Any]:
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage == "dubbing_alignment":
+        if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
+            return {"asr_json_path": f"db://asr_segment/{task_id}"}
         return {"asr_json_path": f"db://dubbing_multi_segment_alignment/{task_id}"}
     asr_ref = f"db://asr_segment/{task_id}"
 
