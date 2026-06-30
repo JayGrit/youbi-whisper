@@ -1,5 +1,5 @@
 SERVICE_NAME = "whisper"
-SERVICE_TABLE = "whisper"
+SERVICE_TABLE = "distributor_task_stages"
 
 PENDING = "pending"
 READY = "ready"

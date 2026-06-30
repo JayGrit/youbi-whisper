@@ -790,8 +790,14 @@ def save_dubbing_alignment_result(
 def demucs_operator_for(task_id: str) -> str | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        _ensure_operator_columns(cur, ("demucs",))
-        cur.execute("SELECT `operator` FROM demucs WHERE task_id = %s", (task_id,))
+        cur.execute(
+            """
+            SELECT `operator`
+            FROM distributor_task_stages
+            WHERE task_id = %s AND stage_name = 'demucs' AND sub_stage = 'main'
+            """,
+            (task_id,),
+        )
         row = cur.fetchone()
         if not row:
             return None
@@ -808,12 +814,13 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             SELECT s.*
             FROM {table} s
             JOIN task t ON t.id = s.task_id
-            WHERE s.status = %s
+            WHERE s.stage_name = %s
+              AND s.status = %s
               AND t.status <> 'failed'
             ORDER BY s.task_id ASC, s.sub_stage ASC
             LIMIT 1
             """,
-            (READY,),
+            (stage_name, READY),
         )
         return video_info.merge_into(cur.fetchone())
 
@@ -831,13 +838,13 @@ def mark_running(stage_name: str, task_id: str, sub_stage: str = "main") -> bool
                 started_at = COALESCE(started_at, NOW()),
                 error_message = NULL,
                 `operator` = %s
-            WHERE task_id = %s AND sub_stage = %s AND status = %s
+            WHERE task_id = %s AND stage_name = %s AND sub_stage = %s AND status = %s
               AND EXISTS (
                   SELECT 1 FROM task t
                   WHERE t.id = %s AND t.status <> 'failed'
               )
             """,
-            (RUNNING, operator, task_id, sub_stage, READY, task_id),
+            (RUNNING, operator, task_id, stage_name, sub_stage, READY, task_id),
         )
         stage_updated = cur.rowcount == 1
         if stage_updated:
@@ -870,11 +877,12 @@ def recycle_stale_running(stage_name: str) -> int:
                 completed_at = NULL,
                 error_message = %s,
                 `operator` = NULL
-            WHERE status = %s
+            WHERE stage_name = %s
+              AND status = %s
               AND started_at IS NOT NULL
               AND TIMESTAMPDIFF(SECOND, started_at, NOW()) > %s
             """,
-            (READY, message, RUNNING, timeout_seconds),
+            (READY, message, stage_name, RUNNING, timeout_seconds),
         )
         recycled = cur.rowcount
         conn.commit()
@@ -882,6 +890,7 @@ def recycle_stale_running(stage_name: str) -> int:
 
 
 def _update_stage_fields(stage_name: str, task_id: str, fields: Mapping[str, Any]) -> None:
+    return
     table = _service_table_for(stage_name)
     assignments = ", ".join(f"{key} = %s" for key in fields)
     values = list(fields.values()) + [task_id]
@@ -898,13 +907,13 @@ def set_translator_asr_json_path(task_id: str, asr_json_path: str) -> None:
 def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | None = None, sub_stage: str = "main") -> None:
     table = _service_table_for(stage_name)
     fields = dict(outputs or {})
-    stage_fields = {key: value for key, value in fields.items() if key not in video_info.COLUMNS}
+    stage_fields: dict[str, Any] = {}
     assignments = ["status = %s", "completed_at = NOW()", "error_message = NULL"]
     values: list[Any] = [SUCCESS]
     for key, value in stage_fields.items():
         assignments.append(f"{key} = %s")
         values.append(value)
-    values.extend((task_id, sub_stage))
+    values.extend((task_id, stage_name, sub_stage))
 
     with connect() as conn:
         cur = conn.cursor()
@@ -918,7 +927,7 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
         # result and output references so the stage does not remain running.
         video_info.upsert(task_id, fields, cur)
         cur.execute(
-            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND sub_stage = %s",
+            f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND stage_name = %s AND sub_stage = %s",
             values,
         )
         conn.commit()
@@ -935,9 +944,9 @@ def mark_failed(stage_name: str, task_id: str, message: str, sub_stage: str = "m
             f"""
             UPDATE {table}
             SET status = %s, error_message = %s, completed_at = NOW()
-            WHERE task_id = %s AND sub_stage = %s
+            WHERE task_id = %s AND stage_name = %s AND sub_stage = %s
             """,
-            (FAILED, message, task_id, sub_stage),
+            (FAILED, message, task_id, stage_name, sub_stage),
         )
         cur.execute(
             """
