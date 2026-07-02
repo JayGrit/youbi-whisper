@@ -47,7 +47,7 @@ def _db_counts(task_id: str) -> dict[str, int]:
         "whisper_aligned_word",
         "whisper_pysbd_segment",
         "whisper_split",
-        "asr_segment",
+        "whisper_asr_segment",
         "whisper_word_timestamp",
     )
     with db.connect() as conn:
@@ -113,7 +113,7 @@ def run_local_asr(
             "segments": len(utterances),
             "final_segments": len(final_segments),
             "text_chars": len(str((data.get("result") or {}).get("text") or "").strip()),
-            "asr_ref": f"db://asr_segment/{task_id}",
+            "asr_ref": f"db://whisper_asr_segment/{task_id}",
             "db_counts": _db_counts(task_id),
             "payload_path": str(payload_path.resolve()),
             "meta_path": str(meta_path.resolve()),

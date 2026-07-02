@@ -38,7 +38,7 @@ class _Connection:
 class FailedTaskCompletionTest(unittest.TestCase):
     def test_whisper_success_is_persisted_after_another_stage_failed_task(self) -> None:
         connection = _Connection()
-        outputs = {"asr_json_path": "db://asr_segment/task-1"}
+        outputs = {"asr_json_path": "db://whisper_asr_segment/task-1"}
         with (
             patch.object(db, "connect", return_value=connection),
             patch.object(db.video_info, "upsert") as upsert,

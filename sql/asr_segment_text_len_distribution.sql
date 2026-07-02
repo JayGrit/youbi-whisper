@@ -1,4 +1,4 @@
--- 统计 youbi.asr_segment.text 字符长度分布。
+-- 统计 youbi.whisper_asr_segment.text 字符长度分布。
 -- 兼容 MySQL 5.7。
 -- 分组：
 --   1) 2026-06-01 23:59:59 及之前，即 created_at < '2026-06-02'
@@ -35,7 +35,7 @@ FROM (
           ELSE '2026-06-02_and_after'
         END AS date_group,
         CHAR_LENGTH(TRIM(COALESCE(text, ''))) AS text_len
-      FROM youbi.asr_segment
+      FROM youbi.whisper_asr_segment
     ) s
   ) b
   GROUP BY b.date_group, b.bucket_start, b.bucket_end
@@ -50,7 +50,7 @@ JOIN (
         WHEN created_at < '2026-06-02' THEN '2026-06-01_and_before'
         ELSE '2026-06-02_and_after'
       END AS date_group
-    FROM youbi.asr_segment
+    FROM youbi.whisper_asr_segment
   ) s
   GROUP BY s.date_group
 ) gt ON gt.date_group = bc.date_group

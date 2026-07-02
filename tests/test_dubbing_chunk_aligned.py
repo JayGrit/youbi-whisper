@@ -73,7 +73,7 @@ class DubbingChunkAlignedWhisperTest(unittest.TestCase):
         download.assert_called_once()
         save_asr.assert_called_once_with("task-1", "zh", aligned_payload, run_id=7)
         save_old_alignment.assert_not_called()
-        self.assertEqual({"asr_json_path": "db://asr_segment/task-1"}, outputs)
+        self.assertEqual({"asr_json_path": "db://whisper_asr_segment/task-1"}, outputs)
 
 
 if __name__ == "__main__":

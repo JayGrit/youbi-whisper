@@ -40,7 +40,7 @@ OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 STAGE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
 _heartbeat_schema_ready = False
-DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE = "dubbing_multi_segment_alignment"
+DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE = "speaker_multi_segment"
 
 
 def _row_value(row: Any, index: int = 0) -> Any:
@@ -563,11 +563,11 @@ def save_asr_segments(
     ensure_asr_schema()
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute("DELETE FROM asr_segment WHERE task_id = %s", (task_id,))
+        cur.execute("DELETE FROM whisper_asr_segment WHERE task_id = %s", (task_id,))
         for index, item in enumerate(segments):
             cur.execute(
                 """
-                INSERT INTO asr_segment
+                INSERT INTO whisper_asr_segment
                   (task_id, item_index, text, start_time, end_time, speaker,
                    whisper_run_id, whisper_split_id)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s)

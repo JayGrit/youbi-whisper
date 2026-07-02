@@ -237,14 +237,14 @@ def handle(row: dict) -> dict[str, Any]:
         shutil.rmtree(session, ignore_errors=True)
 
     # ASR 结果在数据库中的引用地址
-    # 这里不是实际文件路径，而是一个逻辑引用，表示从 asr_segment 表读取该任务分段
+    # 这里不是实际文件路径，而是一个逻辑引用，表示从 whisper_asr_segment 表读取该任务分段
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage == "dubbing_alignment":
         if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
-            return {"asr_json_path": f"db://asr_segment/{task_id}"}
-        return {"asr_json_path": f"db://dubbing_multi_segment_alignment/{task_id}"}
-    asr_ref = f"db://asr_segment/{task_id}"
+            return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}
+        return {"asr_json_path": f"db://speaker_multi_segment/{task_id}"}
+    asr_ref = f"db://whisper_asr_segment/{task_id}"
 
     log.debug("任务 %s 识别结果：%s", task_id, asr_ref)
 
