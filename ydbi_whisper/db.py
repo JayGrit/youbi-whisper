@@ -660,7 +660,7 @@ def record_service_poll() -> None:
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        cur.execute("SELECT * FROM task WHERE id = %s", (task_id,))
+        cur.execute("SELECT task_id AS id FROM video_info WHERE task_id = %s", (task_id,))
         task = cur.fetchone()
         if not task:
             return None
@@ -813,10 +813,8 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             f"""
             SELECT s.*
             FROM {table} s
-            JOIN task t ON t.id = s.task_id
             WHERE s.stage_name = %s
               AND s.status = %s
-              AND t.status <> 'failed'
             ORDER BY s.task_id ASC, s.sub_stage ASC
             LIMIT 1
             """,
@@ -839,25 +837,10 @@ def mark_running(stage_name: str, task_id: str, sub_stage: str = "main") -> bool
                 error_message = NULL,
                 `operator` = %s
             WHERE task_id = %s AND stage_name = %s AND sub_stage = %s AND status = %s
-              AND EXISTS (
-                  SELECT 1 FROM task t
-                  WHERE t.id = %s AND t.status <> 'failed'
-              )
             """,
-            (RUNNING, operator, task_id, stage_name, sub_stage, READY, task_id),
+            (RUNNING, operator, task_id, stage_name, sub_stage, READY),
         )
         stage_updated = cur.rowcount == 1
-        if stage_updated:
-            cur.execute(
-                """
-                UPDATE task
-                SET status = 'running',
-                    current_stage = %s,
-                    started_at = COALESCE(started_at, NOW())
-                WHERE id = %s
-                """,
-                (stage_name, task_id),
-            )
         conn.commit()
         return stage_updated
 
@@ -917,14 +900,6 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
 
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT status FROM task WHERE id = %s", (task_id,))
-        task_row = cur.fetchone()
-        if not task_row:
-            conn.commit()
-            return
-        # A different pipeline stage may fail while Whisper is still running.
-        # Keep the task-level failure, but persist Whisper's own successful
-        # result and output references so the stage does not remain running.
         video_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND stage_name = %s AND sub_stage = %s",
@@ -937,9 +912,6 @@ def mark_failed(stage_name: str, task_id: str, message: str, sub_stage: str = "m
     table = _service_table_for(stage_name)
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT status FROM task WHERE id = %s FOR UPDATE", (task_id,))
-        task_row = cur.fetchone()
-        old_task_status = _row_value(task_row) if task_row else None
         cur.execute(
             f"""
             UPDATE {table}
@@ -948,13 +920,4 @@ def mark_failed(stage_name: str, task_id: str, message: str, sub_stage: str = "m
             """,
             (FAILED, message, task_id, stage_name, sub_stage),
         )
-        cur.execute(
-            """
-            UPDATE task
-            SET status = 'failed', current_stage = %s, error_message = %s, completed_at = NOW()
-            WHERE id = %s
-            """,
-            (stage_name, message, task_id),
-        )
-        _apply_staged_pipeline_failure_cur(cur, task_id, old_task_status)
         conn.commit()
