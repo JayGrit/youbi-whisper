@@ -8,6 +8,7 @@ from urllib.parse import parse_qs, urlparse
 
 YOUTUBE_ID_RE = re.compile(r"^[A-Za-z0-9_-]{11}$")
 BILIBILI_HOSTS = {"bilibili.com", "www.bilibili.com", "m.bilibili.com"}
+DOUYIN_HOSTS = {"douyin.com", "www.douyin.com", "m.douyin.com", "v.douyin.com", "iesdouyin.com"}
 
 
 def _extract_youtube_id(parsed) -> str | None:
@@ -44,6 +45,10 @@ def is_bilibili_url(url: str) -> bool:
     return urlparse(url.strip()).netloc.lower() in BILIBILI_HOSTS
 
 
+def is_douyin_url(url: str) -> bool:
+    return urlparse(url.strip()).netloc.lower() in DOUYIN_HOSTS
+
+
 @dataclass(frozen=True)
 class SourceConfig:
     name: str
@@ -60,6 +65,11 @@ SOURCES: list[SourceConfig] = [
     SourceConfig(
         name="bilibili",
         matches=is_bilibili_url,
+        asr_language="zh",
+    ),
+    SourceConfig(
+        name="douyin",
+        matches=is_douyin_url,
         asr_language="zh",
     ),
 ]
