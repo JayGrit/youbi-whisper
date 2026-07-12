@@ -23,13 +23,19 @@ def _start_task_heartbeat(stage_name: str) -> threading.Event:
         while not stop_event.wait(POLL_INTERVAL_SECONDS):
             try:
                 db.record_service_poll()
-            except Exception:
-                log.exception("更新任务心跳失败")
+            except Exception as exc:
+                if db.is_mysql_connection_error(exc):
+                    log.warning("更新任务心跳失败：网络连接失败")
+                else:
+                    log.exception("更新任务心跳失败")
 
     try:
         db.record_service_poll()
-    except Exception:
-        log.exception("更新任务心跳失败")
+    except Exception as exc:
+        if db.is_mysql_connection_error(exc):
+            log.warning("更新任务心跳失败：网络连接失败")
+        else:
+            log.exception("更新任务心跳失败")
     thread = threading.Thread(target=heartbeat_loop, name=f"{stage_name}-heartbeat", daemon=True)
     thread.start()
     return stop_event
@@ -47,8 +53,11 @@ def run_polling_worker(handler: Handler) -> None:
             if recycled:
                 log.warning("已回收 %d 个超时任务", recycled)
             row = db.find_ready(stage_name)
-        except Exception:
-            log.exception("查询待处理任务失败，%s 秒后重试", POLL_INTERVAL_SECONDS)
+        except Exception as exc:
+            if db.is_mysql_connection_error(exc):
+                log.warning("查询待处理任务失败：网络连接失败，%s 秒后重试", POLL_INTERVAL_SECONDS)
+            else:
+                log.exception("查询待处理任务失败，%s 秒后重试", POLL_INTERVAL_SECONDS)
             time.sleep(POLL_INTERVAL_SECONDS)
             continue
         if not row:
