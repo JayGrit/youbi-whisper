@@ -12,6 +12,24 @@ def _env_bool(name: str, default: bool) -> bool:
     return value.strip().lower() in {"1", "true", "yes", "on"}
 
 
+def _huggingface_token() -> str:
+    for name in (
+        "YDBI_WHISPERX_DIARIZE_HF_TOKEN",
+        "YDBI_WHISPERX_HF_TOKEN",
+        "HF_TOKEN",
+        "HUGGINGFACE_TOKEN",
+    ):
+        token = os.environ.get(name)
+        if token and token.strip():
+            return token.strip()
+    try:
+        from huggingface_hub import get_token
+
+        return (get_token() or "").strip()
+    except Exception:
+        return ""
+
+
 MYSQL_CONFIG = {
     "host": "120.53.92.66",
     "port": 3306,
@@ -70,13 +88,7 @@ WHISPERX_ALIGN_LOCAL_FILES_ONLY = _env_bool("YDBI_WHISPERX_ALIGN_LOCAL_FILES_ONL
 WHISPERX_ALIGN_INTERPOLATE_METHOD = os.environ.get("YDBI_WHISPERX_ALIGN_INTERPOLATE_METHOD", "nearest").strip()
 WHISPERX_REGROUP_MAX_CHARS = int(os.environ.get("YDBI_WHISPERX_REGROUP_MAX_CHARS", "120"))
 WHISPERX_REGROUP_MAX_DURATION_MS = int(os.environ.get("YDBI_WHISPERX_REGROUP_MAX_DURATION_MS", "8000"))
-WHISPERX_DIARIZE_HF_TOKEN = (
-    os.environ.get("YDBI_WHISPERX_DIARIZE_HF_TOKEN")
-    or os.environ.get("YDBI_WHISPERX_HF_TOKEN")
-    or os.environ.get("HF_TOKEN")
-    or os.environ.get("HUGGINGFACE_TOKEN")
-    or ""
-).strip()
+WHISPERX_DIARIZE_HF_TOKEN = _huggingface_token()
 WHISPERX_DIARIZE_MIN_SPEAKERS = (
     int(os.environ["YDBI_WHISPERX_DIARIZE_MIN_SPEAKERS"])
     if os.environ.get("YDBI_WHISPERX_DIARIZE_MIN_SPEAKERS")
