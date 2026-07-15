@@ -28,6 +28,7 @@ from .config import (
     WHISPERX_DIARIZE_HF_TOKEN,
     WHISPERX_DIARIZE_MAX_SPEAKERS,
     WHISPERX_DIARIZE_MIN_SPEAKERS,
+    _huggingface_token,
     WHISPERX_REGROUP_MAX_CHARS,
     WHISPERX_REGROUP_MAX_DURATION_MS,
     WHISPERX_VAD_METHOD,
@@ -1094,7 +1095,8 @@ def _diarize_whisperx_result(
     *,
     task_id: str | None = None,
 ) -> dict:
-    if not WHISPERX_DIARIZE_HF_TOKEN:
+    hf_token = _huggingface_token() or WHISPERX_DIARIZE_HF_TOKEN
+    if not hf_token:
         raise RuntimeError(
             "WhisperX speaker diarization requires YDBI_WHISPERX_DIARIZE_HF_TOKEN "
             "or HF_TOKEN."
@@ -1103,12 +1105,12 @@ def _diarize_whisperx_result(
     task_label = task_id or "本地任务"
     from whisperx.diarize import DiarizationPipeline
 
-    model_key = (runtime_device, WHISPERX_DIARIZE_HF_TOKEN)
+    model_key = (runtime_device, hf_token)
     diarize_model = _DIARIZATION_MODELS.get(model_key)
     if diarize_model is None:
         log.info("任务 %s：正在加载说话人分离模型", task_label)
         diarize_model = DiarizationPipeline(
-            token=WHISPERX_DIARIZE_HF_TOKEN,
+            token=hf_token,
             device=runtime_device,
         )
         _DIARIZATION_MODELS[model_key] = diarize_model
