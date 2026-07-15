@@ -413,12 +413,16 @@ def _patch_hf_hub_download_auth_alias() -> None:
 
     compatible_hf_hub_download._ydbi_accepts_use_auth_token = True
     huggingface_hub.hf_hub_download = compatible_hf_hub_download
-    try:
-        import pyannote.audio.core.pipeline as pyannote_pipeline
-
-        pyannote_pipeline.hf_hub_download = compatible_hf_hub_download
-    except Exception:
-        pass
+    for module_name in (
+        "pyannote.audio.core.pipeline",
+        "pyannote.audio.core.model",
+        "pyannote.audio.pipelines.utils.getter",
+    ):
+        try:
+            module = importlib.import_module(module_name)
+            module.hf_hub_download = compatible_hf_hub_download
+        except Exception:
+            pass
 
 
 def _patch_torch_load_for_pyannote_checkpoint() -> None:
