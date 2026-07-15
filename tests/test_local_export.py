@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import unittest
 
-from ydbi_whisper.local_export import render_srt, render_txt
+from ydbi_whisper.local_export import render_speaker_srt, render_srt, render_txt
 
 
 class LocalExportFormatTest(unittest.TestCase):
@@ -35,6 +35,16 @@ class LocalExportFormatTest(unittest.TestCase):
             ]),
             "1\n00:00:00,000 --> 00:00:01,000\nHello\n\n"
             "2\n00:00:02,000 --> 00:00:03,000\nWorld\n",
+        )
+
+    def test_render_speaker_srt_prefixes_speaker_labels(self) -> None:
+        self.assertEqual(
+            render_speaker_srt([
+                {"start_time": 0, "end_time": 1000, "speaker": "SPEAKER_00", "text": "Hello"},
+                {"start_time": 1000, "end_time": 2000, "speaker": "SPEAKER_01", "text": "World"},
+            ]),
+            "1\n00:00:00,000 --> 00:00:01,000\nSPEAKER_00: Hello\n\n"
+            "2\n00:00:01,000 --> 00:00:02,000\nSPEAKER_01: World\n",
         )
 
     def test_render_txt_falls_back_to_full_text(self) -> None:

@@ -25,6 +25,9 @@ from .config import (
     WHISPERX_BATCH_SIZE,
     WHISPERX_CHUNK_SIZE,
     WHISPERX_COMPUTE_TYPE,
+    WHISPERX_DIARIZE_HF_TOKEN,
+    WHISPERX_DIARIZE_MAX_SPEAKERS,
+    WHISPERX_DIARIZE_MIN_SPEAKERS,
     WHISPERX_REGROUP_MAX_CHARS,
     WHISPERX_REGROUP_MAX_DURATION_MS,
     WHISPERX_VAD_METHOD,
@@ -36,6 +39,7 @@ from .config import (
 # 全局模型缓存变量，用于避免每次识别时都重新加载 Whisper 模型
 _MODEL = None
 _ALIGN_MODELS: dict[tuple[str, str, str, str], tuple[object, dict]] = {}
+_DIARIZATION_MODELS: dict[tuple[str, str], object] = {}
 
 # 当前模块的 logger，用于输出运行时日志
 log = logging.getLogger(__name__)
@@ -110,6 +114,11 @@ def current_asr_config(language: str | None = None, *, load_model: bool = False)
             "regroup": {
                 "max_chars": WHISPERX_REGROUP_MAX_CHARS,
                 "max_duration_ms": WHISPERX_REGROUP_MAX_DURATION_MS,
+            },
+            "diarize": {
+                "available": bool(WHISPERX_DIARIZE_HF_TOKEN),
+                "min_speakers": WHISPERX_DIARIZE_MIN_SPEAKERS,
+                "max_speakers": WHISPERX_DIARIZE_MAX_SPEAKERS,
             },
         },
     }
@@ -361,19 +370,44 @@ def _assign_word_indexes(segments: list[dict]) -> None:
             global_word_index += 1
 
 
+def _speaker_label(item: dict | None) -> str | None:
+    if not item:
+        return None
+    speaker = str(item.get("speaker") or "").strip()
+    return speaker or None
+
+
+def _speaker_from_words(words: list[dict]) -> str | None:
+    counts: dict[str, int] = {}
+    first_label: str | None = None
+    for word in words:
+        speaker = _speaker_label(word)
+        if not speaker:
+            continue
+        first_label = first_label or speaker
+        counts[speaker] = counts.get(speaker, 0) + 1
+    if not counts:
+        return None
+    return max(counts, key=lambda label: (counts[label], label == first_label))
+
+
 def _segment_from_words(words: list[dict], language: str | None = None) -> dict | None:
     timed_words = [word for word in words if "start" in word and "end" in word]
     text = _join_word_texts(words, language)
     if not text or not timed_words:
         return None
     first_word = words[0] if words else {}
-    return {
+    segment = {
         "text": text,
         "start": float(timed_words[0]["start"]),
         "end": float(timed_words[-1]["end"]),
         "words": words,
         "_whisper_aligned_segment_index": first_word.get("_whisper_aligned_segment_index"),
     }
+    speaker = _speaker_from_words(words)
+    if speaker:
+        segment["speaker"] = speaker
+    return segment
 
 
 def _segment_too_long(segment: dict) -> bool:
@@ -862,9 +896,10 @@ def _regroup_words_by_punctuation(words: list[dict], language: str) -> list[dict
 def _regroup_aligned_segments(segments: list[dict], language: str) -> tuple[list[dict], list[dict]]:
     pysbd_segments = []
     current_words = []
+    current_speaker: str | None = None
 
     def flush() -> None:
-        nonlocal current_words
+        nonlocal current_words, current_speaker
         if not current_words:
             return
         sentence_segments = _segment_words_with_pysbd(current_words, language)
@@ -872,6 +907,7 @@ def _regroup_aligned_segments(segments: list[dict], language: str) -> tuple[list
             sentence_segments = _regroup_words_by_punctuation(current_words, language)
         pysbd_segments.extend(sentence_segments)
         current_words = []
+        current_speaker = None
 
     for segment in segments:
         words = segment.get("words") or []
@@ -890,7 +926,12 @@ def _regroup_aligned_segments(segments: list[dict], language: str) -> tuple[list
             if "start" not in word or "end" not in word:
                 flush()
                 continue
+            speaker = _speaker_label(word)
+            if current_words and speaker and current_speaker and speaker != current_speaker:
+                flush()
             current_words.append(word)
+            if speaker:
+                current_speaker = speaker
 
     flush()
     if not pysbd_segments:
@@ -1043,6 +1084,54 @@ def _align_whisperx_result(
         len(aligned.get("word_segments") or []),
     )
     return aligned
+
+
+def _diarize_whisperx_result(
+    whisperx,
+    result: dict,
+    audio: object,
+    runtime_device: str,
+    *,
+    task_id: str | None = None,
+) -> dict:
+    if not WHISPERX_DIARIZE_HF_TOKEN:
+        raise RuntimeError(
+            "WhisperX speaker diarization requires YDBI_WHISPERX_DIARIZE_HF_TOKEN "
+            "or HF_TOKEN."
+        )
+
+    task_label = task_id or "本地任务"
+    from whisperx.diarize import DiarizationPipeline
+
+    model_key = (runtime_device, WHISPERX_DIARIZE_HF_TOKEN)
+    diarize_model = _DIARIZATION_MODELS.get(model_key)
+    if diarize_model is None:
+        log.info("任务 %s：正在加载说话人分离模型", task_label)
+        diarize_model = DiarizationPipeline(
+            token=WHISPERX_DIARIZE_HF_TOKEN,
+            device=runtime_device,
+        )
+        _DIARIZATION_MODELS[model_key] = diarize_model
+
+    kwargs = {}
+    if WHISPERX_DIARIZE_MIN_SPEAKERS is not None:
+        kwargs["min_speakers"] = WHISPERX_DIARIZE_MIN_SPEAKERS
+    if WHISPERX_DIARIZE_MAX_SPEAKERS is not None:
+        kwargs["max_speakers"] = WHISPERX_DIARIZE_MAX_SPEAKERS
+
+    log.info("任务 %s：正在区分说话人", task_label)
+    diarize_segments = diarize_model(audio, **kwargs)
+    assigned = whisperx.assign_word_speakers(diarize_segments, result)
+    speaker_count = len(
+        {
+            speaker
+            for segment in assigned.get("segments") or []
+            for speaker in [str(segment.get("speaker") or "").strip()]
+            if speaker
+        }
+    )
+    log.info("任务 %s：说话人区分完成，共 %d 个说话人", task_label, speaker_count)
+    return assigned
 
 
 def _transcribe(model: object, vocals_file: Path, language: str, runtime_device: str, word_timestamps: bool) -> tuple[dict, object | None]:
@@ -1261,7 +1350,15 @@ def align_known_text(
     }
 
 
-def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id: str | None = None, run_id: int | None = None) -> dict:
+def recognize_speech(
+    vocals_file: Path,
+    session: Path,
+    language: str,
+    *,
+    task_id: str | None = None,
+    run_id: int | None = None,
+    diarize: bool = False,
+) -> dict:
     from pydub import AudioSegment
 
     # 当前任务的 metadata 目录，用于存放识别过程或后续阶段生成的元数据
@@ -1291,7 +1388,7 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
     if WHISPER_ENGINE == "openai" and not word_timestamps:
         log.warning("当前设备不支持词级时间戳，已自动关闭")
     log.debug(
-        "whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s align=%s",
+        "whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s align=%s diarize=%s",
         vocals_file,
         WHISPER_ENGINE,
         WHISPER_MODEL,
@@ -1302,7 +1399,13 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
         WHISPERX_VAD_METHOD if WHISPER_ENGINE == "whisperx" else None,
         _whisperx_vad_options() if WHISPER_ENGINE == "whisperx" else None,
         WHISPERX_ALIGN if WHISPER_ENGINE == "whisperx" else None,
+        diarize,
     )
+
+    if diarize and WHISPER_ENGINE != "whisperx":
+        raise RuntimeError("Speaker diarization requires the whisperx engine.")
+    if diarize and not WHISPERX_ALIGN:
+        raise RuntimeError("Speaker diarization requires WhisperX alignment to be enabled.")
 
     # 调用 Whisper 进行语音识别
     # vocals_file：待识别的人声文件
@@ -1326,6 +1429,14 @@ def recognize_speech(vocals_file: Path, session: Path, language: str, *, task_id
             runtime_device,
             task_id=task_id,
         )
+        if diarize:
+            aligned_result = _diarize_whisperx_result(
+                whisperx,
+                aligned_result,
+                audio,
+                runtime_device,
+                task_id=task_id,
+            )
         aligned_segments = aligned_result.get("segments") or []
         _assign_word_indexes(aligned_segments)
         if task_id is not None and run_id is not None:

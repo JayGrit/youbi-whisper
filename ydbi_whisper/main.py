@@ -11,7 +11,7 @@ from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
-from ydbi_whisper.local_export import render_txt
+from ydbi_whisper.local_export import render_speaker_srt, render_txt
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -24,6 +24,7 @@ DUBBING_ALIGNMENT_TASK_TYPES = {
     DUBBING_MULTI_SEGMENT_TASK_TYPE,
     DUBBING_CHUNK_ALIGNED_TASK_TYPE,
 }
+DIALOGUE_SUB_STAGES = {"dialogue", "对话"}
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -120,6 +121,7 @@ def handle(row: dict) -> dict[str, Any]:
         narration_task = task_type == "narration"
         dubbing_alignment = task_type in DUBBING_ALIGNMENT_TASK_TYPES and sub_stage == "dubbing_alignment"
         source_transcription = sub_stage == "source_transcription"
+        dialogue_stage = sub_stage in DIALOGUE_SUB_STAGES
         if (narration_task and not source_transcription) or dubbing_alignment:
             asr_language = "zh"
             source_name = "dubbing_alignment" if dubbing_alignment else "narration"
@@ -176,6 +178,7 @@ def handle(row: dict) -> dict[str, Any]:
                     language=asr_language,
                     task_id=task_id,
                     run_id=run_id,
+                    diarize=dialogue_stage,
                 )
         except NoSpeechDetected:
             if source_transcription:
@@ -202,7 +205,22 @@ def handle(row: dict) -> dict[str, Any]:
                 "text/plain; charset=utf-8",
             )
         else:
-            if dubbing_alignment:
+            if dialogue_stage:
+                result = data.get("result") or {}
+                duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
+                from ydbi_whisper.asr_segments import fix_asr_segment_rows
+                asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
+                dialogue_srt = render_speaker_srt(asr_segments)
+                if not dialogue_srt.strip():
+                    raise RuntimeError("对话 SRT 生成结果为空")
+                dialogue_srt_path = session / "dialogue.srt"
+                dialogue_srt_path.write_text(dialogue_srt, encoding="utf-8")
+                dialogue_srt_url = upload(
+                    dialogue_srt_path,
+                    f"{task_id}/whisper/dialogue.srt",
+                    "application/x-subrip; charset=utf-8",
+                )
+            elif dubbing_alignment:
                 if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
                     asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
                 else:
@@ -240,6 +258,8 @@ def handle(row: dict) -> dict[str, Any]:
     # 这里不是实际文件路径，而是一个逻辑引用，表示从 whisper_asr_segment 表读取该任务分段
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
+    if sub_stage in DIALOGUE_SUB_STAGES:
+        return {"dialogue_srt_url": dialogue_srt_url}
     if sub_stage == "dubbing_alignment":
         if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
             return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}

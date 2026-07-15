@@ -30,6 +30,7 @@ COLUMNS: dict[str, str] = {
     "timings_json_path": "TEXT",
     "final_video_url": "TEXT",
     "source_transcript_txt_url": "TEXT",
+    "dialogue_srt_url": "TEXT",
 }
 
 _schema_ready = False

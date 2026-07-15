@@ -50,6 +50,21 @@ def render_srt(segments: list[dict[str, Any]]) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+def render_speaker_srt(segments: list[dict[str, Any]]) -> str:
+    blocks = []
+    index = 1
+    for segment in segments:
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = str(segment.get("speaker") or "UNKNOWN").strip() or "UNKNOWN"
+        start = _srt_timestamp(int(segment.get("start_time") or 0))
+        end = _srt_timestamp(int(segment.get("end_time") or 0))
+        blocks.append(f"{index}\n{start} --> {end}\n{speaker}: {text}")
+        index += 1
+    return "\n\n".join(blocks) + ("\n" if blocks else "")
+
+
 def render_txt(segments: list[dict[str, Any]], fallback_text: str = "") -> str:
     lines = [str(segment.get("text") or "").strip() for segment in segments]
     text = "\n".join(line for line in lines if line).strip()
