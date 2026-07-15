@@ -22,6 +22,15 @@ def _huggingface_token() -> str:
         token = os.environ.get(name)
         if token and token.strip():
             return token.strip()
+    for path in (
+        Path(os.environ.get("HF_TOKEN_PATH", "")).expanduser() if os.environ.get("HF_TOKEN_PATH") else None,
+        Path.home() / ".cache" / "huggingface" / "token",
+        Path.home() / ".huggingface" / "token",
+    ):
+        if path is not None and path.is_file():
+            token = path.read_text(encoding="utf-8").strip()
+            if token:
+                return token
     try:
         from huggingface_hub import get_token
 
