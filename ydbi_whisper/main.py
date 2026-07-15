@@ -11,7 +11,7 @@ from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
-from ydbi_whisper.local_export import render_speaker_srt, render_txt
+from ydbi_whisper.local_export import render_speaker_txt, render_txt
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -210,15 +210,15 @@ def handle(row: dict) -> dict[str, Any]:
                 duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
                 from ydbi_whisper.asr_segments import fix_asr_segment_rows
                 asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
-                dialogue_srt = render_speaker_srt(asr_segments)
-                if not dialogue_srt.strip():
-                    raise RuntimeError("对话 SRT 生成结果为空")
-                dialogue_srt_path = session / "dialogue.srt"
-                dialogue_srt_path.write_text(dialogue_srt, encoding="utf-8")
+                dialogue_txt = render_speaker_txt(asr_segments)
+                if not dialogue_txt.strip():
+                    raise RuntimeError("对话文本生成结果为空")
+                dialogue_path = session / "dialogue.txt"
+                dialogue_path.write_text(dialogue_txt, encoding="utf-8")
                 dialogue_srt_url = upload(
-                    dialogue_srt_path,
-                    f"{task_id}/whisper/dialogue.srt",
-                    "application/x-subrip; charset=utf-8",
+                    dialogue_path,
+                    f"{task_id}/whisper/dialogue.txt",
+                    "text/plain; charset=utf-8",
                 )
             elif dubbing_alignment:
                 if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:

@@ -1192,6 +1192,105 @@ def _diarize_whisperx_result(
     return assigned
 
 
+def _load_diarization_pipeline(runtime_device: str, task_label: str):
+    hf_token = _huggingface_token() or WHISPERX_DIARIZE_HF_TOKEN
+    if not hf_token:
+        raise RuntimeError(
+            "WhisperX speaker diarization requires YDBI_WHISPERX_DIARIZE_HF_TOKEN "
+            "or HF_TOKEN."
+        )
+
+    _patch_hf_hub_download_auth_alias()
+    _patch_torch_load_for_pyannote_checkpoint()
+    from whisperx.diarize import DiarizationPipeline
+
+    model_key = (runtime_device, hf_token)
+    diarize_model = _DIARIZATION_MODELS.get(model_key)
+    if diarize_model is not None:
+        return diarize_model
+
+    log.info("任务 %s：正在加载说话人分离模型", task_label)
+    init_params = inspect.signature(DiarizationPipeline.__init__).parameters
+    token_kwargs = (
+        {"use_auth_token": hf_token}
+        if "use_auth_token" in init_params
+        else {"token": hf_token}
+    )
+    diarize_model = DiarizationPipeline(device=runtime_device, **token_kwargs)
+    _DIARIZATION_MODELS[model_key] = diarize_model
+    return diarize_model
+
+
+def _diarization_rows(diarize_segments: object) -> list[dict]:
+    if hasattr(diarize_segments, "to_dict"):
+        return list(diarize_segments.to_dict("records"))
+    return []
+
+
+def _overlap_seconds(start_a: float, end_a: float, start_b: float, end_b: float) -> float:
+    return max(0.0, min(end_a, end_b) - max(start_a, start_b))
+
+
+def _assign_segment_speakers_from_diarization(
+    segments: list[dict],
+    diarize_segments: object,
+) -> None:
+    rows = _diarization_rows(diarize_segments)
+    if not rows:
+        return
+
+    for segment in segments:
+        start = float(segment.get("start") or 0.0)
+        end = float(segment.get("end") or start)
+        scores: dict[str, float] = {}
+        for row in rows:
+            speaker = str(row.get("speaker") or "").strip()
+            if not speaker:
+                continue
+            row_start = float(row.get("start") or 0.0)
+            row_end = float(row.get("end") or row_start)
+            overlap = _overlap_seconds(start, end, row_start, row_end)
+            if overlap > 0:
+                scores[speaker] = scores.get(speaker, 0.0) + overlap
+        if scores:
+            segment["speaker"] = max(scores, key=scores.get)
+
+
+def _diarize_raw_segments(
+    result: dict,
+    audio: object,
+    runtime_device: str,
+    *,
+    task_id: str | None = None,
+) -> dict:
+    task_label = task_id or "本地任务"
+    diarize_model = _load_diarization_pipeline(runtime_device, task_label)
+
+    kwargs = {}
+    if WHISPERX_DIARIZE_MIN_SPEAKERS is not None:
+        kwargs["min_speakers"] = WHISPERX_DIARIZE_MIN_SPEAKERS
+    if WHISPERX_DIARIZE_MAX_SPEAKERS is not None:
+        kwargs["max_speakers"] = WHISPERX_DIARIZE_MAX_SPEAKERS
+
+    log.info("任务 %s：正在区分说话人", task_label)
+    diarize_segments = diarize_model(audio, **kwargs)
+    segments = result.get("segments") or []
+    _assign_segment_speakers_from_diarization(segments, diarize_segments)
+    speaker_count = len(
+        {
+            str(segment.get("speaker") or "").strip()
+            for segment in segments
+            if str(segment.get("speaker") or "").strip()
+        }
+    )
+    log.info("任务 %s：说话人区分完成，共 %d 个说话人", task_label, speaker_count)
+    return {
+        **result,
+        "segments": segments,
+        "text": " ".join(str(seg.get("text") or "").strip() for seg in segments).strip(),
+    }
+
+
 def _transcribe(model: object, vocals_file: Path, language: str, runtime_device: str, word_timestamps: bool) -> tuple[dict, object | None]:
     if WHISPER_ENGINE == "whisperx":
         import whisperx
@@ -1462,8 +1561,6 @@ def recognize_speech(
 
     if diarize and WHISPER_ENGINE != "whisperx":
         raise RuntimeError("Speaker diarization requires the whisperx engine.")
-    if diarize and not WHISPERX_ALIGN:
-        raise RuntimeError("Speaker diarization requires WhisperX alignment to be enabled.")
 
     # 调用 Whisper 进行语音识别
     # vocals_file：待识别的人声文件
@@ -1475,6 +1572,35 @@ def recognize_speech(
     raw_segment_ids: dict[int, int] = {}
     if task_id is not None and run_id is not None:
         raw_segment_ids = db.save_whisper_raw_segments(run_id, task_id, raw_result.get("segments", []))
+
+    if diarize:
+        if audio is None:
+            raise RuntimeError("Speaker diarization requires loaded WhisperX audio.")
+        result = _diarize_raw_segments(
+            raw_result,
+            audio,
+            runtime_device,
+            task_id=task_id,
+        )
+        utterances = _convert_segments(result.get("segments", []))
+        log.debug("whisper dialogue result converted audio=%s utterances=%s", vocals_file, len(utterances))
+        if not utterances:
+            raise RuntimeError("Whisper dialogue did not return any segments.")
+        duration_ms = len(AudioSegment.from_file(vocals_file))
+        if run_id is not None:
+            db.update_whisper_run_runtime(
+                run_id,
+                runtime_device=runtime_device,
+                model_path=_model_name_or_path(),
+                input_duration_ms=duration_ms,
+            )
+        return {
+            "audio_info": {"duration": duration_ms},
+            "result": {
+                "text": (result.get("text") or "").strip(),
+                "utterances": utterances,
+            },
+        }
 
     if WHISPER_ENGINE == "whisperx" and audio is not None:
         import whisperx

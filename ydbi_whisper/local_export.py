@@ -65,6 +65,33 @@ def render_speaker_srt(segments: list[dict[str, Any]]) -> str:
     return "\n\n".join(blocks) + ("\n" if blocks else "")
 
 
+def render_speaker_txt(segments: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    current_speaker: str | None = None
+    current_text: list[str] = []
+
+    def flush() -> None:
+        nonlocal current_speaker, current_text
+        text = " ".join(current_text).strip()
+        if text:
+            lines.append(f"{current_speaker or 'UNKNOWN'}: {text}")
+        current_speaker = None
+        current_text = []
+
+    for segment in segments:
+        text = str(segment.get("text") or "").strip()
+        if not text:
+            continue
+        speaker = str(segment.get("speaker") or "UNKNOWN").strip() or "UNKNOWN"
+        if current_text and speaker != current_speaker:
+            flush()
+        current_speaker = speaker
+        current_text.append(text)
+
+    flush()
+    return "\n\n".join(lines) + ("\n" if lines else "")
+
+
 def render_txt(segments: list[dict[str, Any]], fallback_text: str = "") -> str:
     lines = [str(segment.get("text") or "").strip() for segment in segments]
     text = "\n".join(line for line in lines if line).strip()
