@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import importlib
+import inspect
 import re
 import unicodedata
 from pathlib import Path
@@ -390,6 +391,52 @@ def _speaker_from_words(words: list[dict]) -> str | None:
     if not counts:
         return None
     return max(counts, key=lambda label: (counts[label], label == first_label))
+
+
+def _patch_hf_hub_download_auth_alias() -> None:
+    try:
+        import huggingface_hub
+    except Exception:
+        return
+
+    original = getattr(huggingface_hub, "hf_hub_download", None)
+    if original is None or "use_auth_token" in inspect.signature(original).parameters:
+        return
+    if getattr(original, "_ydbi_accepts_use_auth_token", False):
+        return
+
+    def compatible_hf_hub_download(*args, **kwargs):
+        use_auth_token = kwargs.pop("use_auth_token", None)
+        if use_auth_token is not None and "token" not in kwargs:
+            kwargs["token"] = use_auth_token
+        return original(*args, **kwargs)
+
+    compatible_hf_hub_download._ydbi_accepts_use_auth_token = True
+    huggingface_hub.hf_hub_download = compatible_hf_hub_download
+    try:
+        import pyannote.audio.core.pipeline as pyannote_pipeline
+
+        pyannote_pipeline.hf_hub_download = compatible_hf_hub_download
+    except Exception:
+        pass
+
+
+def _patch_torch_load_for_pyannote_checkpoint() -> None:
+    try:
+        import torch
+    except Exception:
+        return
+
+    original = torch.load
+    if getattr(original, "_ydbi_pyannote_weights_only_default", False):
+        return
+
+    def compatible_torch_load(*args, **kwargs):
+        kwargs["weights_only"] = False
+        return original(*args, **kwargs)
+
+    compatible_torch_load._ydbi_pyannote_weights_only_default = True
+    torch.load = compatible_torch_load
 
 
 def _segment_from_words(words: list[dict], language: str | None = None) -> dict | None:
@@ -1103,16 +1150,21 @@ def _diarize_whisperx_result(
         )
 
     task_label = task_id or "本地任务"
+    _patch_hf_hub_download_auth_alias()
+    _patch_torch_load_for_pyannote_checkpoint()
     from whisperx.diarize import DiarizationPipeline
 
     model_key = (runtime_device, hf_token)
     diarize_model = _DIARIZATION_MODELS.get(model_key)
     if diarize_model is None:
         log.info("任务 %s：正在加载说话人分离模型", task_label)
-        diarize_model = DiarizationPipeline(
-            token=hf_token,
-            device=runtime_device,
+        init_params = inspect.signature(DiarizationPipeline.__init__).parameters
+        token_kwargs = (
+            {"use_auth_token": hf_token}
+            if "use_auth_token" in init_params
+            else {"token": hf_token}
         )
+        diarize_model = DiarizationPipeline(device=runtime_device, **token_kwargs)
         _DIARIZATION_MODELS[model_key] = diarize_model
 
     kwargs = {}
