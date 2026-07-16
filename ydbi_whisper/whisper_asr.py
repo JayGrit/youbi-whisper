@@ -1573,35 +1573,6 @@ def recognize_speech(
     if task_id is not None and run_id is not None:
         raw_segment_ids = db.save_whisper_raw_segments(run_id, task_id, raw_result.get("segments", []))
 
-    if diarize:
-        if audio is None:
-            raise RuntimeError("Speaker diarization requires loaded WhisperX audio.")
-        result = _diarize_raw_segments(
-            raw_result,
-            audio,
-            runtime_device,
-            task_id=task_id,
-        )
-        utterances = _convert_segments(result.get("segments", []))
-        log.debug("whisper dialogue result converted audio=%s utterances=%s", vocals_file, len(utterances))
-        if not utterances:
-            raise RuntimeError("Whisper dialogue did not return any segments.")
-        duration_ms = len(AudioSegment.from_file(vocals_file))
-        if run_id is not None:
-            db.update_whisper_run_runtime(
-                run_id,
-                runtime_device=runtime_device,
-                model_path=_model_name_or_path(),
-                input_duration_ms=duration_ms,
-            )
-        return {
-            "audio_info": {"duration": duration_ms},
-            "result": {
-                "text": (result.get("text") or "").strip(),
-                "utterances": utterances,
-            },
-        }
-
     if WHISPER_ENGINE == "whisperx" and audio is not None:
         import whisperx
 
