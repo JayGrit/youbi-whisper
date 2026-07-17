@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import json
 from collections.abc import Mapping
 from typing import Any
 
@@ -36,6 +37,7 @@ UPLOAD_SUBMISSION_TABLES = (
     "uploader_task",
 )
 HEARTBEAT_DEVICE_COLUMNS = ("Macbook Air M4", "Macmini M2", "LPXB", "MY_HP", "LPXB_HP", "TXY")
+PRODUCT_PPT_TABLE = "product_ppt"
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 STAGE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
@@ -719,6 +721,126 @@ def list_dubbing_alignment_segments(task_id: str) -> list[dict[str, Any]]:
             (task_id,),
         )
         return list(cur.fetchall())
+
+
+def ensure_product_ppt_schema(cur) -> None:
+    cur.execute(
+        f"""
+        CREATE TABLE IF NOT EXISTS {PRODUCT_PPT_TABLE} (
+          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
+          task_id VARCHAR(64) NOT NULL,
+          dialogue_srt_url TEXT NULL,
+          ppt_dialogue_json MEDIUMTEXT NULL,
+          ppt_dialogue_json_url TEXT NULL,
+          ppt_alignment_json MEDIUMTEXT NULL,
+          ppt_alignment_json_url TEXT NULL,
+          ppt_dialogue_audio_url TEXT NULL,
+          ppt_subtitle_srt_url TEXT NULL,
+          status VARCHAR(32) NOT NULL DEFAULT 'ready',
+          error_message TEXT NULL,
+          started_at DATETIME NULL,
+          completed_at DATETIME NULL,
+          `operator` VARCHAR(128) NULL,
+          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+          UNIQUE KEY uk_product_ppt_task_id (task_id),
+          KEY idx_product_ppt_status (status, id)
+        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
+        """
+    )
+    for column, definition in {
+        "ppt_alignment_json": "MEDIUMTEXT NULL",
+        "ppt_alignment_json_url": "TEXT NULL",
+        "ppt_dialogue_audio_url": "TEXT NULL",
+        "ppt_subtitle_srt_url": "TEXT NULL",
+    }.items():
+        if not _staged_column_exists_cur(cur, PRODUCT_PPT_TABLE, column):
+            cur.execute(f"ALTER TABLE {PRODUCT_PPT_TABLE} ADD COLUMN {column} {definition}")
+
+
+def list_ppt_alignment_segments(task_id: str) -> list[dict[str, Any]]:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        ensure_product_ppt_schema(cur)
+        cur.execute(
+            f"""
+            SELECT ppt_alignment_json
+            FROM {PRODUCT_PPT_TABLE}
+            WHERE task_id = %s
+            """,
+            (task_id,),
+        )
+        row = cur.fetchone() or {}
+        raw_json = str(row.get("ppt_alignment_json") or "").strip()
+        alignment_items: dict[int, str] = {}
+        if raw_json:
+            value = json.loads(raw_json)
+            if not isinstance(value, list):
+                raise ValueError("product_ppt.ppt_alignment_json must be a JSON array")
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                text = str(item.get("text") or "").strip()
+                if not text:
+                    continue
+                alignment_items[int(item.get("item_index") or len(alignment_items))] = text
+        cur.execute(
+            """
+            SELECT item_index, status, dst_text AS fallback_text,
+                   actual_start_time AS start_time, actual_end_time AS end_time
+            FROM speaker_segment
+            WHERE task_id = %s
+            ORDER BY item_index ASC
+            """,
+            (task_id,),
+        )
+        rows: list[dict[str, Any]] = []
+        for segment in cur.fetchall():
+            item_index = int(segment.get("item_index") or 0)
+            text = alignment_items.get(item_index) or str(segment.get("fallback_text") or "").strip()
+            rows.append(
+                {
+                    "item_index": item_index,
+                    "status": segment.get("status"),
+                    "text": text,
+                    "start_time": segment.get("start_time"),
+                    "end_time": segment.get("end_time"),
+                }
+            )
+        return rows
+
+
+def get_ppt_dialogue_audio_url(task_id: str) -> str:
+    with connect() as conn:
+        cur = _dict_cursor(conn)
+        ensure_product_ppt_schema(cur)
+        cur.execute(
+            f"SELECT ppt_dialogue_audio_url FROM {PRODUCT_PPT_TABLE} WHERE task_id = %s",
+            (task_id,),
+        )
+        row = cur.fetchone() or {}
+        return str(row.get("ppt_dialogue_audio_url") or "").strip()
+
+
+def update_ppt_subtitle_srt_url(task_id: str, srt_url: str) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        ensure_product_ppt_schema(cur)
+        cur.execute(
+            f"""
+            INSERT INTO {PRODUCT_PPT_TABLE}
+              (task_id, ppt_subtitle_srt_url, status, completed_at, error_message, `operator`)
+            VALUES (%s, %s, 'subtitle_aligned', NOW(), '', %s)
+            ON DUPLICATE KEY UPDATE
+              ppt_subtitle_srt_url = VALUES(ppt_subtitle_srt_url),
+              status = VALUES(status),
+              completed_at = VALUES(completed_at),
+              error_message = VALUES(error_message),
+              `operator` = VALUES(`operator`)
+            """,
+            (task_id, srt_url, _operator_value()),
+        )
+        conn.commit()
 
 
 def save_dubbing_alignment_result(

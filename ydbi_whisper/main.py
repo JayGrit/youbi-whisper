@@ -11,7 +11,7 @@ from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
-from ydbi_whisper.local_export import render_speaker_txt, render_txt
+from ydbi_whisper.local_export import render_speaker_txt, render_srt, render_txt
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -25,6 +25,7 @@ DUBBING_ALIGNMENT_TASK_TYPES = {
     DUBBING_CHUNK_ALIGNED_TASK_TYPE,
 }
 DIALOGUE_SUB_STAGES = {"dialogue", "对话"}
+PPT_ALIGNMENT_SUB_STAGE = "ppt_alignment"
 
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
@@ -53,6 +54,7 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     source_transcription = str(row.get("sub_stage") or "main") == "source_transcription"
     task_type = str(row.get("task_type") or "").strip().lower()
     dubbing_alignment = str(row.get("sub_stage") or "main") == "dubbing_alignment"
+    ppt_alignment = task_type == "ppt" and str(row.get("sub_stage") or "main") == PPT_ALIGNMENT_SUB_STAGE
     narration_audio_url = (
         str(row.get("audio_dubbing_url") or "").strip()
         if task_type == "narration" and not source_transcription
@@ -63,7 +65,13 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
         if task_type in DUBBING_ALIGNMENT_TASK_TYPES and dubbing_alignment
         else ""
     )
-    audio_vocals_url = dubbing_alignment_audio_url or narration_audio_url or str(row.get("audio_vocals_url") or "").strip()
+    ppt_alignment_audio_url = db.get_ppt_dialogue_audio_url(task_id) if ppt_alignment else ""
+    audio_vocals_url = (
+        ppt_alignment_audio_url
+        or dubbing_alignment_audio_url
+        or narration_audio_url
+        or str(row.get("audio_vocals_url") or "").strip()
+    )
     input_url = audio_vocals_url
     input_label = "vocals"
     if not input_url:
@@ -73,12 +81,16 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
         input_label = "dubbing alignment audio"
     elif narration_audio_url:
         input_label = "narration audio"
+    elif ppt_alignment_audio_url:
+        input_label = "ppt dialogue audio"
 
     # 如果没有人声音频地址，说明上游 demucs 或下载阶段没有正确产出 vocals
     if not input_url:
         raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
     if dubbing_alignment and not dubbing_alignment_audio_url:
         raise FileNotFoundError(f"audio_dubbing_url is missing for dubbing alignment task: {task_id}")
+    if ppt_alignment and not ppt_alignment_audio_url:
+        raise FileNotFoundError(f"product_ppt.ppt_dialogue_audio_url is missing for ppt alignment task: {task_id}")
 
     # 计算本地下载目标路径
     destination = _download_destination(session, input_url)
@@ -105,6 +117,7 @@ def handle(row: dict) -> dict[str, Any]:
     # 后续会在这个目录下存放临时音频、metadata 等文件
     session = task_work_dir(task_id)
     run_id: int | None = None
+    ppt_subtitle_srt_url = ""
 
     try:
         # 下载或准备当前任务的人声音频文件
@@ -120,11 +133,15 @@ def handle(row: dict) -> dict[str, Any]:
         task_type = str(row.get("task_type") or "").strip().lower()
         narration_task = task_type == "narration"
         dubbing_alignment = task_type in DUBBING_ALIGNMENT_TASK_TYPES and sub_stage == "dubbing_alignment"
+        ppt_alignment = task_type == "ppt" and sub_stage == PPT_ALIGNMENT_SUB_STAGE
         source_transcription = sub_stage == "source_transcription"
         dialogue_stage = sub_stage in DIALOGUE_SUB_STAGES
-        if (narration_task and not source_transcription) or dubbing_alignment:
+        if (narration_task and not source_transcription) or dubbing_alignment or ppt_alignment:
             asr_language = "zh"
-            source_name = "dubbing_alignment" if dubbing_alignment else "narration"
+            if ppt_alignment:
+                source_name = "ppt_alignment"
+            else:
+                source_name = "dubbing_alignment" if dubbing_alignment else "narration"
         else:
             if not source_url:
                 raise ValueError(f"source_url is missing for task: {task_id}")
@@ -154,10 +171,12 @@ def handle(row: dict) -> dict[str, Any]:
         # 调用 Whisper ASR 进行语音识别
         # 返回 data，结构中包含 audio_info、result.text、result.utterances 等信息
         try:
-            if (narration_task and not source_transcription) or dubbing_alignment:
+            if (narration_task and not source_transcription) or dubbing_alignment or ppt_alignment:
                 known_segments = (
                     db.list_dubbing_alignment_segments(task_id)
                     if dubbing_alignment
+                    else db.list_ppt_alignment_segments(task_id)
+                    if ppt_alignment
                     else db.list_narration_alignment_segments(task_id)
                 )
                 if not known_segments:
@@ -230,6 +249,19 @@ def handle(row: dict) -> dict[str, Any]:
                         run_id=run_id,
                         known_segments=known_segments,
                     )
+            elif ppt_alignment:
+                asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
+                subtitle_srt = render_srt(asr_segments)
+                if not subtitle_srt.strip():
+                    raise RuntimeError("PPT subtitle SRT generation result is empty")
+                subtitle_path = session / "ppt_subtitle.srt"
+                subtitle_path.write_text(subtitle_srt, encoding="utf-8")
+                ppt_subtitle_srt_url = upload(
+                    subtitle_path,
+                    f"{task_id}/whisper/ppt_subtitle.srt",
+                    "application/x-subrip; charset=utf-8",
+                )
+                db.update_ppt_subtitle_srt_url(task_id, ppt_subtitle_srt_url)
             else:
                 asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
 
@@ -264,6 +296,11 @@ def handle(row: dict) -> dict[str, Any]:
         if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
             return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}
         return {"asr_json_path": f"db://speaker_multi_segment/{task_id}"}
+    if sub_stage == PPT_ALIGNMENT_SUB_STAGE:
+        return {
+            "asr_json_path": f"db://whisper_asr_segment/{task_id}",
+            "subtitle_srt_url": ppt_subtitle_srt_url,
+        }
     asr_ref = f"db://whisper_asr_segment/{task_id}"
 
     log.debug("任务 %s 识别结果：%s", task_id, asr_ref)
