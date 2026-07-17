@@ -649,6 +649,7 @@ def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
 
 
 def ensure_service_heartbeat_schema() -> None:
+    return
     global _heartbeat_schema_ready
     _heartbeat_schema_ready = True
 
@@ -724,6 +725,7 @@ def list_dubbing_alignment_segments(task_id: str) -> list[dict[str, Any]]:
 
 
 def ensure_product_ppt_schema(cur) -> None:
+    return
     cur.execute(
         f"""
         CREATE TABLE IF NOT EXISTS {PRODUCT_PPT_TABLE} (
