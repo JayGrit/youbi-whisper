@@ -45,6 +45,14 @@ def _download_destination(session: Path, source_ref: str) -> Path:
     return session / "media" / f"audio_vocals{suffix}"
 
 
+def _truthy(value: object) -> bool:
+    if value is None:
+        return False
+    if isinstance(value, str):
+        return value.strip().lower() not in {"", "0", "false", "no", "off"}
+    return bool(value)
+
+
 def _vocals_input_for(row: dict, session: Path) -> Path:
     # 从任务行中取出 task_id
     task_id = row["task_id"]
@@ -72,9 +80,15 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
         or narration_audio_url
         or str(row.get("audio_vocals_url") or "").strip()
     )
+    has_background_audio = row.get("has_background_audio")
+    source_transcription_with_vocals = (
+        task_type == "narration"
+        and source_transcription
+        and _truthy(has_background_audio)
+    )
     input_url = audio_vocals_url
     input_label = "vocals"
-    if not input_url:
+    if not input_url and not source_transcription_with_vocals:
         input_url = str(row.get("audio_source_url") or "").strip()
         input_label = "source audio"
     elif dubbing_alignment_audio_url:
@@ -86,6 +100,8 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
 
     # 如果没有人声音频地址，说明上游 demucs 或下载阶段没有正确产出 vocals
     if not input_url:
+        if source_transcription_with_vocals:
+            raise FileNotFoundError(f"audio_vocals_url is missing for narration source transcription task: {task_id}")
         raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
     if dubbing_alignment and not dubbing_alignment_audio_url:
         raise FileNotFoundError(f"audio_dubbing_url is missing for dubbing alignment task: {task_id}")
@@ -153,7 +169,8 @@ def handle(row: dict) -> dict[str, Any]:
             language=asr_language,
             source_url=source_url or source_name,
             input_audio_url=str(
-                (row.get("audio_source_url") if source_transcription else None)
+                (row.get("audio_vocals_url") if source_transcription and _truthy(row.get("has_background_audio")) else None)
+                or (row.get("audio_source_url") if source_transcription else None)
                 or row.get("audio_dubbing_url")
                 or row.get("audio_vocals_url")
                 or row.get("audio_source_url")
