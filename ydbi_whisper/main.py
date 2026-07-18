@@ -27,6 +27,18 @@ DUBBING_ALIGNMENT_TASK_TYPES = {
 DIALOGUE_SUB_STAGES = {"dialogue", "对话"}
 PPT_ALIGNMENT_SUB_STAGE = "ppt_alignment"
 
+
+def _asr_language_from_source_language(value: object) -> str:
+    language = str(value or "").strip().lower().replace("_", "-")
+    if not language:
+        return ""
+    if language in {"中文", "汉语", "漢語", "chinese", "mandarin"} or language.startswith("zh"):
+        return "zh"
+    if language in {"英文", "英语", "英語", "english"} or language.startswith("en"):
+        return "en"
+    return language.split("-", 1)[0]
+
+
 def _sha256(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as file:
@@ -162,7 +174,9 @@ def handle(row: dict) -> dict[str, Any]:
             if not source_url:
                 raise ValueError(f"source_url is missing for task: {task_id}")
             source = detect_source(source_url)
-            asr_language = source.asr_language
+            asr_language = _asr_language_from_source_language(
+                task.get("source_language") or row.get("source_language")
+            ) or source.asr_language
             source_name = source.name
         run_id = db.create_whisper_run(
             task_id=task_id,

@@ -13,6 +13,7 @@ COLUMNS: dict[str, str] = {
     "task_type": "VARCHAR(32)",
     "has_background_audio": "TINYINT(1)",
     "source_url": "TEXT",
+    "source_language": "VARCHAR(64)",
     "submitter_video_id": "BIGINT UNSIGNED",
     "metadata_url": "TEXT",
     "video_source_url": "TEXT",
