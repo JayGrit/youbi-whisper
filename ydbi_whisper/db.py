@@ -7,7 +7,7 @@ from typing import Any
 
 import mysql.connector
 
-from . import video_info
+from . import task_info
 from .asr_segments import fix_asr_segment_rows
 from .config import (
     DEVICE,
@@ -677,12 +677,12 @@ def record_service_poll() -> None:
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        cur.execute("SELECT task_id AS id FROM video_info WHERE task_id = %s", (task_id,))
+        cur.execute("SELECT task_id AS id FROM task_info WHERE task_id = %s", (task_id,))
         task = cur.fetchone()
         if not task:
             return None
-        info = video_info.get(task_id) or {}
-        task["video_info"] = info
+        info = task_info.get(task_id) or {}
+        task["task_info"] = info
         for key, value in info.items():
             if value is not None:
                 task[key] = value
@@ -958,7 +958,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             """,
             (stage_name, READY),
         )
-        return video_info.merge_into(cur.fetchone())
+        return task_info.merge_into(cur.fetchone())
 
 
 def mark_running(stage_name: str, task_id: str, sub_stage: str = "main") -> bool:
@@ -1022,7 +1022,7 @@ def _update_stage_fields(stage_name: str, task_id: str, fields: Mapping[str, Any
 
 
 def set_translator_asr_json_path(task_id: str, asr_json_path: str) -> None:
-    video_info.upsert(task_id, {"asr_json_path": asr_json_path})
+    task_info.upsert(task_id, {"asr_json_path": asr_json_path})
 
 
 def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | None = None, sub_stage: str = "main") -> None:
@@ -1038,7 +1038,7 @@ def mark_success(stage_name: str, task_id: str, outputs: Mapping[str, Any] | Non
 
     with connect() as conn:
         cur = conn.cursor()
-        video_info.upsert(task_id, fields, cur)
+        task_info.upsert(task_id, fields, cur)
         cur.execute(
             f"UPDATE {table} SET {', '.join(assignments)} WHERE task_id = %s AND stage_name = %s AND sub_stage = %s",
             values,
