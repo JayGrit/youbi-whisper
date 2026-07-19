@@ -677,11 +677,11 @@ def record_service_poll() -> None:
 def get_task(task_id: str) -> dict[str, Any] | None:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        cur.execute("SELECT task_id AS id FROM task_info WHERE task_id = %s", (task_id,))
+        cur.execute("SELECT id FROM task WHERE id = %s", (task_id,))
         task = cur.fetchone()
         if not task:
             return None
-        info = task_info.get(task_id) or {}
+        info = task_info.get(task_id, fields={"source_url", "source_language"}) or {}
         task["task_info"] = info
         for key, value in info.items():
             if value is not None:
@@ -958,7 +958,17 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
             """,
             (stage_name, READY),
         )
-        return task_info.merge_into(cur.fetchone())
+        return task_info.merge_into(
+            cur.fetchone(),
+            fields={
+                "task_type",
+                "source_language",
+                "audio_source_url",
+                "audio_vocals_url",
+                "audio_dubbing_url",
+                "has_background_audio",
+            },
+        )
 
 
 def mark_running(stage_name: str, task_id: str, sub_stage: str = "main") -> bool:
