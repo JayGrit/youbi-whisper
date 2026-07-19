@@ -40,7 +40,7 @@ class NoSpeechPipelineTest(unittest.TestCase):
         connection = _Connection()
         with (
             patch.object(db, "connect", return_value=connection),
-            patch.object(db.video_info, "upsert") as upsert,
+            patch.object(db.task_info, "upsert") as upsert,
         ):
             db.mark_success(
                 "whisper",

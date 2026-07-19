@@ -3,14 +3,14 @@ from __future__ import annotations
 import unittest
 from unittest import mock
 
-from ydbi_whisper import video_info
+from ydbi_whisper import task_info
 
 
 class NarrationInputTests(unittest.TestCase):
     def test_video_info_merge_includes_narration_task_type(self) -> None:
         row = {"task_id": "narration-6", "status": "ready"}
         with mock.patch.object(
-            video_info,
+            task_info,
             "get",
             return_value={
                 "task_id": "narration-6",
@@ -18,7 +18,7 @@ class NarrationInputTests(unittest.TestCase):
                 "audio_dubbing_url": "https://example.test/narration.wav",
             },
         ):
-            merged = video_info.merge_into(row)
+            merged = task_info.merge_into(row)
 
         self.assertEqual("narration", merged["task_type"])
         self.assertEqual(
