@@ -230,12 +230,8 @@ def handle(row: dict) -> dict[str, Any]:
                     run_id=run_id,
                     diarize=dialogue_stage,
                 )
-        except NoSpeechDetected:
-            if source_transcription:
-                raise RuntimeError("没有原生字幕且未识别到语音")
-            log.warning("任务 %s：未检测到有效语音，已跳过字幕处理", task_id)
-            db.finish_whisper_run(run_id, "success")
-            return {}
+        except NoSpeechDetected as exc:
+            raise RuntimeError("无人声") from exc
 
         # 保存后处理后的 ASR 识别结果
         # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
@@ -246,7 +242,7 @@ def handle(row: dict) -> dict[str, Any]:
             asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
             transcript = render_txt(asr_segments, str(result.get("text") or ""))
             if not transcript.strip():
-                raise RuntimeError("没有原生字幕且未识别到语音")
+                raise RuntimeError("无人声")
             transcript_path = session / "source_transcription.txt"
             transcript_path.write_text(transcript, encoding="utf-8")
             transcript_url = upload(

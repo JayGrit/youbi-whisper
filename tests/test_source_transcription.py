@@ -45,8 +45,25 @@ class SourceTranscriptionTest(unittest.TestCase):
                 mock.patch.object(main, "recognize_speech", side_effect=NoSpeechDetected("none")),
                 mock.patch.object(main.db, "finish_whisper_run"),
             ):
-                with self.assertRaisesRegex(RuntimeError, "未识别到语音"):
+                with self.assertRaisesRegex(RuntimeError, "无人声"):
                     main.handle({"task_id": "task-1", "sub_stage": "source_transcription", "task_type": "narration", "audio_source_url": "minio://audio"})
+
+    def test_dubbing_fails_on_no_speech(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            audio = Path(tmp) / "audio.m4a"
+            audio.write_bytes(b"audio")
+            with (
+                mock.patch.object(main, "task_work_dir", return_value=Path(tmp)),
+                mock.patch.object(main, "_vocals_input_for", return_value=audio),
+                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ"}),
+                mock.patch.object(main.db, "create_whisper_run", return_value=7),
+                mock.patch.object(main, "recognize_speech", side_effect=NoSpeechDetected("none")),
+                mock.patch.object(main.db, "finish_whisper_run") as finish_run,
+            ):
+                with self.assertRaisesRegex(RuntimeError, "无人声"):
+                    main.handle({"task_id": "task-1", "sub_stage": "main", "task_type": "dubbing", "audio_vocals_url": "minio://audio"})
+
+        finish_run.assert_not_called()
 
 
 if __name__ == "__main__":

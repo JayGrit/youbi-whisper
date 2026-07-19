@@ -1316,9 +1316,7 @@ def _transcribe(model: object, vocals_file: Path, language: str, runtime_device:
         except IndexError as exc:
             if not _is_empty_whisperx_batch_error(exc):
                 raise
-            raise NoSpeechDetected(
-                "WhisperX VAD found no active speech in the input audio."
-            ) from exc
+            raise NoSpeechDetected("无人声") from exc
         segments = result.get("segments", [])
         result["text"] = " ".join(str(seg.get("text") or "").strip() for seg in segments).strip()
         log.debug(
@@ -1662,7 +1660,7 @@ def recognize_speech(
 
     # 如果 Whisper 没有返回任何语音片段，说明识别结果不可用
     if not utterances:
-        raise RuntimeError("Whisper did not return any segments.")
+        raise NoSpeechDetected("无人声")
 
     # 使用 pydub 读取音频文件，并计算音频总时长
     # len(AudioSegment) 返回毫秒数
