@@ -131,12 +131,8 @@ def _row_value(row: Any, index: int = 0) -> Any:
     return row[index]
 
 
-def _ensure_schema_with_cursor(cur) -> None:
-    return
 
 
-def ensure_schema() -> None:
-    return
 
 
 def _split_fields(fields: Mapping[str, Any]) -> dict[str, dict[str, Any]]:

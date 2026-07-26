@@ -103,8 +103,6 @@ def _staged_column_exists_cur(cur, table: str, column: str) -> bool:
     return bool(row and int(_row_value(row)) > 0)
 
 
-def _ensure_staged_account_columns_cur(cur) -> bool:
-    return False
 
 
 def _task_has_upload_submission_cur(cur, task_id: str, topic: str) -> bool:
@@ -131,8 +129,6 @@ def _apply_staged_pipeline_failure_cur(cur, task_id: str, old_task_status: str |
     return
 
 
-def _ensure_columns(cur, table: str, columns: Mapping[str, str]) -> None:
-    return
 
 def _table_columns(cur, table: str) -> set[str]:
     return set()
@@ -143,20 +139,10 @@ def _table_exists(cur, table: str) -> bool:
 def _table_indexes(cur, table: str) -> set[str]:
     return set()
 
-def _drop_index_if_exists(cur, table: str, index_name: str) -> None:
-    return
 
-def _drop_column_if_exists(cur, table: str, column_name: str) -> None:
-    return
 
-def _drop_table_if_exists(cur, table: str) -> None:
-    return
 
-def _migrate_asr_schema(cur) -> None:
-    return
 
-def ensure_asr_schema() -> None:
-    return
 
 def create_whisper_run(
     *,
@@ -456,18 +442,6 @@ def save_whisper_splits(
     ids: dict[int, int] = {}
     with connect() as conn:
         cur = conn.cursor()
-        _ensure_columns(
-            cur,
-            "whisper_split",
-            {
-                "split_trigger": "VARCHAR(64) NULL",
-                "split_method": "VARCHAR(64) NULL",
-                "split_conjunction": "VARCHAR(64) NULL",
-                "original_text": "MEDIUMTEXT NULL",
-                "original_part_index": "INT NULL",
-                "original_part_count": "INT NULL",
-            },
-        )
         cur.execute("DELETE FROM whisper_split WHERE run_id = %s", (run_id,))
         for index, segment in enumerate(segments):
             if not segment.get("_whisper_split_applied"):
@@ -546,7 +520,6 @@ def _word_timestamp_rows(task_id: str, segments: list[dict[str, Any]], run_id: i
 
 
 def save_word_timestamps(task_id: str, segments: list[dict[str, Any]], run_id: int | None = None) -> int:
-    ensure_asr_schema()
     rows = _word_timestamp_rows(task_id, segments, run_id)
     with connect() as conn:
         cur = conn.cursor()
@@ -576,7 +549,6 @@ def save_asr_segments(
     segments: list[dict[str, Any]],
     run_id: int | None = None,
 ) -> None:
-    ensure_asr_schema()
     with connect() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM whisper_asr_segment WHERE task_id = %s", (task_id,))
@@ -656,8 +628,6 @@ def current_operator() -> str:
     return _operator_value()
 
 
-def _ensure_operator_columns(cur, tables: tuple[str, ...]) -> None:
-    return
 
 
 def record_service_poll() -> None:
@@ -738,46 +708,11 @@ def list_dubbing_alignment_segments(task_id: str) -> list[dict[str, Any]]:
         return list(cur.fetchall())
 
 
-def ensure_product_ppt_schema(cur) -> None:
-    return
-    cur.execute(
-        f"""
-        CREATE TABLE IF NOT EXISTS {PRODUCT_PPT_TABLE} (
-          id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-          task_id VARCHAR(64) NOT NULL,
-          dialogue_srt_url TEXT NULL,
-          ppt_dialogue_json MEDIUMTEXT NULL,
-          ppt_dialogue_json_url TEXT NULL,
-          ppt_alignment_json MEDIUMTEXT NULL,
-          ppt_alignment_json_url TEXT NULL,
-          ppt_dialogue_audio_url TEXT NULL,
-          ppt_subtitle_srt_url TEXT NULL,
-          status VARCHAR(32) NOT NULL DEFAULT 'ready',
-          error_message TEXT NULL,
-          started_at DATETIME NULL,
-          completed_at DATETIME NULL,
-          `operator` VARCHAR(128) NULL,
-          created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-          updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-          UNIQUE KEY uk_product_ppt_task_id (task_id),
-          KEY idx_product_ppt_status (status, id)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-        """
-    )
-    for column, definition in {
-        "ppt_alignment_json": "MEDIUMTEXT NULL",
-        "ppt_alignment_json_url": "TEXT NULL",
-        "ppt_dialogue_audio_url": "TEXT NULL",
-        "ppt_subtitle_srt_url": "TEXT NULL",
-    }.items():
-        if not _staged_column_exists_cur(cur, PRODUCT_PPT_TABLE, column):
-            cur.execute(f"ALTER TABLE {PRODUCT_PPT_TABLE} ADD COLUMN {column} {definition}")
 
 
 def list_ppt_alignment_segments(task_id: str) -> list[dict[str, Any]]:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        ensure_product_ppt_schema(cur)
         cur.execute(
             f"""
             SELECT ppt_alignment_json
@@ -829,7 +764,6 @@ def list_ppt_alignment_segments(task_id: str) -> list[dict[str, Any]]:
 def get_ppt_dialogue_audio_url(task_id: str) -> str:
     with connect() as conn:
         cur = _dict_cursor(conn)
-        ensure_product_ppt_schema(cur)
         cur.execute(
             f"SELECT ppt_dialogue_audio_url FROM {PRODUCT_PPT_TABLE} WHERE task_id = %s",
             (task_id,),
@@ -841,7 +775,6 @@ def get_ppt_dialogue_audio_url(task_id: str) -> str:
 def update_ppt_subtitle_srt_url(task_id: str, srt_url: str) -> None:
     with connect() as conn:
         cur = conn.cursor()
-        ensure_product_ppt_schema(cur)
         cur.execute(
             f"""
             INSERT INTO {PRODUCT_PPT_TABLE}
@@ -889,31 +822,6 @@ def save_dubbing_alignment_result(
 
     with connect() as conn:
         cur = conn.cursor()
-        cur.execute(
-            f"""
-            CREATE TABLE IF NOT EXISTS {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE} (
-              id BIGINT UNSIGNED NOT NULL AUTO_INCREMENT PRIMARY KEY,
-              task_id VARCHAR(64) NOT NULL,
-              item_index INT NOT NULL,
-              chunk_index INT NOT NULL DEFAULT 0,
-              text MEDIUMTEXT NOT NULL,
-              start_time INT NOT NULL,
-              end_time INT NOT NULL,
-              whisper_run_id BIGINT NULL,
-              created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
-              updated_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
-              UNIQUE KEY uk_dubbing_multi_alignment_item (task_id, item_index),
-              KEY idx_dubbing_multi_alignment_task (task_id)
-            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci
-            """
-        )
-        if not _staged_column_exists_cur(cur, DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE, "chunk_index"):
-            cur.execute(
-                f"""
-                ALTER TABLE {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE}
-                ADD COLUMN chunk_index INT NOT NULL DEFAULT 0 AFTER item_index
-                """
-            )
         cur.execute(
             f"DELETE FROM {DUBBING_MULTI_SEGMENT_ALIGNMENT_TABLE} WHERE task_id = %s",
             (task_id,),
@@ -990,7 +898,6 @@ def mark_running(stage_name: str, task_id: str, sub_stage: str = "main") -> bool
     operator = _operator_value()
     with connect() as conn:
         cur = conn.cursor()
-        _ensure_operator_columns(cur, (table,))
         cur.execute(
             f"""
             UPDATE {table}
@@ -1013,7 +920,6 @@ def recycle_stale_running(stage_name: str) -> int:
     message = f"{stage_name} task timed out after {timeout_seconds}s; retrying"
     with connect() as conn:
         cur = conn.cursor()
-        _ensure_operator_columns(cur, (table,))
         cur.execute(
             f"""
             UPDATE {table}
