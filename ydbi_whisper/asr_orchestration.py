@@ -107,7 +107,7 @@ def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str
     _core.log.debug('whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s align=%s diarize=%s', vocals_file, _core.WHISPER_ENGINE, _core.WHISPER_MODEL, _core.WHISPER_RUNTIME_DEVICE, runtime_device, language, word_timestamps, _core.WHISPERX_VAD_METHOD if _core.WHISPER_ENGINE == 'whisperx' else None, _core._whisperx_vad_options() if _core.WHISPER_ENGINE == 'whisperx' else None, _core.WHISPERX_ALIGN if _core.WHISPER_ENGINE == 'whisperx' else None, diarize)
     if diarize and _core.WHISPER_ENGINE != 'whisperx':
         raise RuntimeError('Speaker diarization requires the whisperx engine.')
-    raw_result, audio = _core._transcribe(model, vocals_file, language, runtime_device, word_timestamps)
+    raw_result, audio = _transcribe(model, vocals_file, language, runtime_device, word_timestamps)
     result = raw_result
     raw_segment_ids: dict[int, int] = {}
     if task_id is not None and run_id is not None:
