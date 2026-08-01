@@ -29,27 +29,11 @@ mkdir -p \
   "$TRANSFORMERS_CACHE" \
   "$XDG_CACHE_HOME"
 
-PYTHON_CMD=""
-for candidate in python3.12 python3 python; do
-  if command -v "$candidate" >/dev/null 2>&1 && "$candidate" -c 'import sys; raise SystemExit(0 if sys.version_info >= (3, 12) else 1)' >/dev/null 2>&1; then
-    PYTHON_CMD=$candidate
-    break
-  fi
-done
-
-if [ -z "$PYTHON_CMD" ]; then
-  echo "Python 3.12+ was not found. Install Python, then rerun ./start.sh." >&2
+PYTHON_CMD="${YOUBI_PYTHON:-/Users/hoshuuch/Money/YouBi/.venv/bin/python}"
+if [ ! -x "$PYTHON_CMD" ]; then
+  echo "YouBi Python environment was not found: $PYTHON_CMD" >&2
   exit 1
 fi
-
-if [ ! -x ".venv/bin/python" ]; then
-  echo "Creating Python virtual environment..."
-  "$PYTHON_CMD" -m venv .venv
-fi
-
-echo "Installing Python dependencies..."
-.venv/bin/python -m pip install -U pip
-.venv/bin/python -m pip install -e .
 
 if ! command -v ffmpeg >/dev/null 2>&1; then
   echo "ffmpeg was not found in PATH. Install ffmpeg before processing audio." >&2
@@ -64,4 +48,4 @@ echo "Model root: $YDBI_WHISPER_MODEL_ROOT"
 echo "Work dir: $YDBI_WHISPER_WORK_DIR"
 echo
 
-exec .venv/bin/python -m ydbi_whisper.main
+exec "$PYTHON_CMD" -m ydbi_whisper.main
