@@ -5,7 +5,7 @@ cd /d "%~dp0"
 
 if not defined DEVICE set "DEVICE=MY_HP"
 set "YDBI_WHISPER_MODEL_ROOT=%~dp0models"
-set "YDBI_WHISPER_DOWNLOAD_ROOT=%~dp0models\openai-whisper"
+set "YDBI_WHISPER_DOWNLOAD_ROOT=%~dp0models"
 set "YDBI_WHISPERX_ALIGN_MODEL_DIR=%~dp0models\align"
 set "YDBI_WHISPER_WORK_DIR=%~dp0work"
 set "TORCH_HOME=%~dp0models\torch"

@@ -3,23 +3,20 @@ from __future__ import annotations
 from . import whisper_asr as _core
 
 def _transcribe(model: object, vocals_file: _core.Path, language: str, runtime_device: str, word_timestamps: bool) -> tuple[dict, object | None]:
-    if _core.WHISPER_ENGINE == 'whisperx':
-        import whisperx
-        _core.log.debug('whisperx loading audio file=%s', vocals_file)
-        audio = whisperx.load_audio(str(vocals_file))
-        _core.log.debug('whisperx transcribe start file=%s language=%s batch_size=%s chunk_size=%s runtime_device=%s', vocals_file, language, _core.WHISPERX_BATCH_SIZE, _core.WHISPERX_CHUNK_SIZE, runtime_device)
-        try:
-            result = model.transcribe(audio, batch_size=_core.WHISPERX_BATCH_SIZE, language=language, chunk_size=_core.WHISPERX_CHUNK_SIZE, verbose=False)
-        except IndexError as exc:
-            if not _core._is_empty_whisperx_batch_error(exc):
-                raise
-            raise _core.NoSpeechDetected('无人声') from exc
-        segments = result.get('segments', [])
-        result['text'] = ' '.join((str(seg.get('text') or '').strip() for seg in segments)).strip()
-        _core.log.debug('whisperx transcribe done file=%s language=%s segments=%s text_chars=%s', vocals_file, result.get('language') or language, len(segments), len(result['text']))
-        return (result, audio)
-    _core.log.debug('openai whisper transcribe start file=%s language=%s runtime_device=%s word_timestamps=%s', vocals_file, language, runtime_device, word_timestamps)
-    return (model.transcribe(str(vocals_file), language=language, word_timestamps=word_timestamps, verbose=False), None)
+    import whisperx
+    _core.log.debug('whisperx loading audio file=%s', vocals_file)
+    audio = whisperx.load_audio(str(vocals_file))
+    _core.log.debug('whisperx transcribe start file=%s language=%s batch_size=%s chunk_size=%s runtime_device=%s', vocals_file, language, _core.WHISPERX_BATCH_SIZE, _core.WHISPERX_CHUNK_SIZE, runtime_device)
+    try:
+        result = model.transcribe(audio, batch_size=_core.WHISPERX_BATCH_SIZE, language=language, chunk_size=_core.WHISPERX_CHUNK_SIZE, verbose=False)
+    except IndexError as exc:
+        if not _core._is_empty_whisperx_batch_error(exc):
+            raise
+        raise _core.NoSpeechDetected('无人声') from exc
+    segments = result.get('segments', [])
+    result['text'] = ' '.join((str(seg.get('text') or '').strip() for seg in segments)).strip()
+    _core.log.debug('whisperx transcribe done file=%s language=%s segments=%s text_chars=%s', vocals_file, result.get('language') or language, len(segments), len(result['text']))
+    return (result, audio)
 
 def align_known_text(vocals_file: _core.Path, known_segments: list[dict], language: str, *, task_id: str | None=None, run_id: int | None=None) -> dict:
     from pydub import AudioSegment
@@ -101,9 +98,7 @@ def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str
     runtime_device = str(getattr(model, 'device', _core._runtime_device_for_engine())).lower()
     if run_id is not None:
         _core.db.update_whisper_run_runtime(run_id, runtime_device=runtime_device, model_path=_core._model_name_or_path())
-    word_timestamps = _core.WHISPER_ENGINE == 'openai' and _core._word_timestamps_for(runtime_device)
-    if _core.WHISPER_ENGINE == 'openai' and (not word_timestamps):
-        _core.log.warning('当前设备不支持词级时间戳，已自动关闭')
+    word_timestamps = False
     _core.log.debug('whisper runtime audio=%s engine=%s model=%s configured_device=%s runtime_device=%s language=%s word_timestamps=%s vad_method=%s vad_options=%s align=%s diarize=%s', vocals_file, _core.WHISPER_ENGINE, _core.WHISPER_MODEL, _core.WHISPER_RUNTIME_DEVICE, runtime_device, language, word_timestamps, _core.WHISPERX_VAD_METHOD if _core.WHISPER_ENGINE == 'whisperx' else None, _core._whisperx_vad_options() if _core.WHISPER_ENGINE == 'whisperx' else None, _core.WHISPERX_ALIGN if _core.WHISPER_ENGINE == 'whisperx' else None, diarize)
     if diarize and _core.WHISPER_ENGINE != 'whisperx':
         raise RuntimeError('Speaker diarization requires the whisperx engine.')
