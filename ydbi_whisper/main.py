@@ -8,7 +8,6 @@ from typing import Any
 
 from ydbi_whisper import db
 from ydbi_whisper.config import task_work_dir
-from ydbi_whisper.sources import detect_source
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
 from ydbi_whisper.local_export import render_speaker_txt, render_srt, render_txt
@@ -151,12 +150,9 @@ def handle(row: dict) -> dict[str, Any]:
         # 下载或准备当前任务的人声音频文件
         vocals = _vocals_input_for(row, session)
 
-        # 从数据库中读取任务主表信息
-        # 主要用于拿 source_url，进而判断来源类型和 ASR 语言
+        # 从数据库中读取任务信息，获取原始语言等配置
         task = db.get_task(task_id)
 
-        # 根据任务的 source_url 判断来源
-        # source 中一般会包含 asr_language 等配置
         source_url = str(task.get("source_url") or "").strip()
         task_type = str(row.get("task_type") or "").strip().lower()
         narration_task = task_type == "narration"
@@ -171,13 +167,12 @@ def handle(row: dict) -> dict[str, Any]:
             else:
                 source_name = "dubbing_alignment" if dubbing_alignment else "narration"
         else:
-            if not source_url:
-                raise ValueError(f"source_url is missing for task: {task_id}")
-            source = detect_source(source_url)
             asr_language = _asr_language_from_source_language(
                 task.get("source_language") or row.get("source_language")
-            ) or source.asr_language
-            source_name = source.name
+            )
+            if not asr_language:
+                raise ValueError(f"source_language is missing for task: {task_id}")
+            source_name = "configured_source_language"
         run_id = db.create_whisper_run(
             task_id=task_id,
             language=asr_language,
