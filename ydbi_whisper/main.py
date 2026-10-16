@@ -11,6 +11,7 @@ from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
 from ydbi_whisper.local_export import render_speaker_txt, render_srt, render_txt
+from ydbi_whisper.podcast_dialogue import render_dialogue_srt
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -145,6 +146,8 @@ def handle(row: dict) -> dict[str, Any]:
     session = task_work_dir(task_id)
     run_id: int | None = None
     ppt_subtitle_srt_url = ""
+    dialogue_txt_url = ""
+    dialogue_srt_url = ""
 
     try:
         # 下载或准备当前任务的人声音频文件
@@ -256,11 +259,22 @@ def handle(row: dict) -> dict[str, Any]:
                     raise RuntimeError("对话文本生成结果为空")
                 dialogue_path = session / "dialogue.txt"
                 dialogue_path.write_text(dialogue_txt, encoding="utf-8")
-                dialogue_srt_url = upload(
+                dialogue_txt_url = upload(
                     dialogue_path,
                     f"{task_id}/whisper/dialogue.txt",
                     "text/plain; charset=utf-8",
                 )
+                if task_type == "podcast":
+                    aligned_segments = db.podcast_aligned_dialogue_segments(task_id, run_id)
+                    srt_text = render_dialogue_srt(aligned_segments)
+                    srt_path = session / "dialogue.srt"
+                    srt_path.write_text(srt_text, encoding="utf-8")
+                    dialogue_srt_url = upload(
+                        srt_path,
+                        f"{task_id}/whisper/dialogue.srt",
+                        "application/x-subrip; charset=utf-8",
+                    )
+                    db.save_podcast_dialogue_urls(task_id, dialogue_txt_url, dialogue_srt_url)
             elif dubbing_alignment:
                 if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
                     asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
@@ -313,7 +327,7 @@ def handle(row: dict) -> dict[str, Any]:
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage in DIALOGUE_SUB_STAGES:
-        return {"dialogue_srt_url": dialogue_srt_url}
+        return {"dialogue_srt_url": dialogue_srt_url or dialogue_txt_url}
     if sub_stage == "dubbing_alignment":
         if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
             return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}

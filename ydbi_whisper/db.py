@@ -39,6 +39,7 @@ UPLOAD_SUBMISSION_TABLES = (
     "uploader_task",
 )
 PRODUCT_PPT_TABLE = "product_ppt"
+PRODUCT_PODCAST_TABLE = "product_podcast"
 OPERATOR_COLUMN = "operator"
 OPERATOR_COLUMN_DEFINITION = "VARCHAR(128) NULL"
 STAGE_RUNNING_TIMEOUT_SECONDS = 2 * 60 * 60
@@ -594,6 +595,37 @@ def save_asr_result(task_id: str, language: str, payload: dict[str, Any], run_id
 def connect():
     conn = mysql.connector.connect(**MYSQL_CONFIG)
     return conn
+
+
+def podcast_aligned_dialogue_segments(task_id: str, run_id: int) -> list[dict[str, Any]]:
+    with connect() as conn:
+        cur = conn.cursor(dictionary=True)
+        cur.execute(
+            """SELECT aligned_index, start_time, end_time, text, speaker
+               FROM whisper_aligned_segment
+               WHERE task_id=%s AND run_id=%s ORDER BY aligned_index""",
+            (task_id, run_id),
+        )
+        return list(cur.fetchall())
+
+
+def save_podcast_dialogue_urls(task_id: str, txt_url: str, srt_url: str) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            f"UPDATE {PRODUCT_PODCAST_TABLE} "
+            "SET dialogue_txt_url=%s, dialogue_srt_url=%s WHERE task_id=%s",
+            (txt_url, srt_url, task_id),
+        )
+        if cur.rowcount != 1:
+            cur.execute(
+                f"SELECT dialogue_txt_url, dialogue_srt_url FROM {PRODUCT_PODCAST_TABLE} WHERE task_id=%s",
+                (task_id,),
+            )
+            current = cur.fetchone()
+            if not current or current != (txt_url, srt_url):
+                raise ValueError(f"product_podcast row missing for {task_id}")
+        conn.commit()
 
 
 def _dict_cursor(conn):
