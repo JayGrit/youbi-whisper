@@ -609,25 +609,6 @@ def podcast_aligned_dialogue_segments(task_id: str, run_id: int) -> list[dict[st
         return list(cur.fetchall())
 
 
-def save_podcast_dialogue_urls(task_id: str, txt_url: str, srt_url: str) -> None:
-    with connect() as conn:
-        cur = conn.cursor()
-        cur.execute(
-            f"UPDATE {PRODUCT_PODCAST_TABLE} "
-            "SET dialogue_txt_url=%s, dialogue_srt_url=%s WHERE task_id=%s",
-            (txt_url, srt_url, task_id),
-        )
-        if cur.rowcount != 1:
-            cur.execute(
-                f"SELECT dialogue_txt_url, dialogue_srt_url FROM {PRODUCT_PODCAST_TABLE} WHERE task_id=%s",
-                (task_id,),
-            )
-            current = cur.fetchone()
-            if not current or current != (txt_url, srt_url):
-                raise ValueError(f"product_podcast row missing for {task_id}")
-        conn.commit()
-
-
 def _dict_cursor(conn):
     return conn.cursor(dictionary=True)
 
