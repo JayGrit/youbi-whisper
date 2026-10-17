@@ -265,8 +265,9 @@ def handle(row: dict) -> dict[str, Any]:
                     "text/plain; charset=utf-8",
                 )
                 if task_type == "podcast":
-                    aligned_segments = db.podcast_aligned_dialogue_segments(task_id, run_id)
-                    srt_text = render_dialogue_srt(aligned_segments)
+                    # recognize_speech has already regrouped and split long aligned
+                    # segments; the raw aligned rows still contain oversized cues.
+                    srt_text = render_dialogue_srt(asr_segments)
                     srt_path = session / "dialogue.srt"
                     srt_path.write_text(srt_text, encoding="utf-8")
                     dialogue_srt_url = upload(
