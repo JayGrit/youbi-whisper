@@ -5,8 +5,8 @@ from __future__ import annotations
 import math
 
 
-PODCAST_CUE_MAX_CHARS = 80
-PODCAST_LINE_TARGET_CHARS = 40
+PODCAST_CUE_MAX_CHARS = 90
+PODCAST_LINE_TARGET_CHARS = 50
 
 
 def _word_text(word: dict) -> str:
@@ -32,7 +32,7 @@ def _line_break(words: list[dict]) -> str:
         raise ValueError(f"Podcast subtitle has no word boundary for line break: {content!r}")
     balanced = [index for index in choices
                 if max(len(_joined(words[:index])), len(_joined(words[index:]))) <= PODCAST_LINE_TARGET_CHARS]
-    split_at = min(balanced or choices, key=lambda index: _break_score(words, index, len(content) / 2))
+    split_at = min(balanced or choices, key=lambda index: _break_score(words, index, PODCAST_LINE_TARGET_CHARS))
     return _joined(words[:split_at]) + "\n" + _joined(words[split_at:])
 
 
@@ -56,8 +56,8 @@ def _word_groups(words: list[dict], max_chars: int) -> list[list[dict]]:
 
 def split_podcast_dialogue_segments(segments: list[dict], *, max_chars: int = PODCAST_CUE_MAX_CHARS) -> list[dict]:
     """Use aligned word boundaries for cues and a visible line break within long cues."""
-    if max_chars < 2 * PODCAST_LINE_TARGET_CHARS:
-        raise ValueError("Podcast subtitle maximum must allow two 40-character lines")
+    if max_chars < PODCAST_LINE_TARGET_CHARS:
+        raise ValueError("Podcast subtitle maximum must allow the requested line length")
     result = []
     for segment in segments:
         original = str(segment.get("text") or "").strip()
