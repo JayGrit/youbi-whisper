@@ -11,7 +11,7 @@ from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
 from ydbi_whisper.local_export import render_speaker_txt, render_srt, render_txt
-from ydbi_whisper.podcast_dialogue import render_dialogue_srt
+from ydbi_whisper.podcast_dialogue import render_dialogue_srt, split_podcast_dialogue_segments
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -254,17 +254,18 @@ def handle(row: dict) -> dict[str, Any]:
                 duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
                 from ydbi_whisper.asr_segments import fix_asr_segment_rows
                 asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
-                dialogue_txt = render_speaker_txt(asr_segments)
-                if not dialogue_txt.strip():
-                    raise RuntimeError("对话文本生成结果为空")
                 if task_type == "podcast":
                     # recognize_speech has already regrouped and split long aligned
-                    # segments; the raw aligned rows still contain oversized cues.
+                    # segments; enforce the shorter final podcast display limit.
+                    asr_segments = split_podcast_dialogue_segments(asr_segments)
                     srt_text = render_dialogue_srt(asr_segments)
                     if not srt_text.strip():
                         raise RuntimeError("播客字幕生成结果为空")
                     db.save_asr_segments(task_id, asr_segments, run_id)
                 else:
+                    dialogue_txt = render_speaker_txt(asr_segments)
+                    if not dialogue_txt.strip():
+                        raise RuntimeError("对话文本生成结果为空")
                     dialogue_path = session / "dialogue.txt"
                     dialogue_path.write_text(dialogue_txt, encoding="utf-8")
                     dialogue_txt_url = upload(
