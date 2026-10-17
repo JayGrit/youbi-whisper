@@ -257,25 +257,21 @@ def handle(row: dict) -> dict[str, Any]:
                 dialogue_txt = render_speaker_txt(asr_segments)
                 if not dialogue_txt.strip():
                     raise RuntimeError("对话文本生成结果为空")
-                dialogue_path = session / "dialogue.txt"
-                dialogue_path.write_text(dialogue_txt, encoding="utf-8")
-                dialogue_txt_url = upload(
-                    dialogue_path,
-                    f"{task_id}/whisper/dialogue.txt",
-                    "text/plain; charset=utf-8",
-                )
                 if task_type == "podcast":
                     # recognize_speech has already regrouped and split long aligned
                     # segments; the raw aligned rows still contain oversized cues.
                     srt_text = render_dialogue_srt(asr_segments)
-                    srt_path = session / "dialogue.srt"
-                    srt_path.write_text(srt_text, encoding="utf-8")
-                    dialogue_srt_url = upload(
-                        srt_path,
-                        f"{task_id}/whisper/dialogue.srt",
-                        "application/x-subrip; charset=utf-8",
+                    if not srt_text.strip():
+                        raise RuntimeError("播客字幕生成结果为空")
+                    db.save_asr_segments(task_id, asr_segments, run_id)
+                else:
+                    dialogue_path = session / "dialogue.txt"
+                    dialogue_path.write_text(dialogue_txt, encoding="utf-8")
+                    dialogue_txt_url = upload(
+                        dialogue_path,
+                        f"{task_id}/whisper/dialogue.txt",
+                        "text/plain; charset=utf-8",
                     )
-                    db.save_podcast_dialogue_urls(task_id, dialogue_txt_url, dialogue_srt_url)
             elif dubbing_alignment:
                 if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
                     asr_segments = db.save_asr_result(task_id, asr_language, data, run_id=run_id)
@@ -328,6 +324,8 @@ def handle(row: dict) -> dict[str, Any]:
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage in DIALOGUE_SUB_STAGES:
+        if task_type == "podcast":
+            return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}
         return {"dialogue_srt_url": dialogue_srt_url or dialogue_txt_url}
     if sub_stage == "dubbing_alignment":
         if task_type == DUBBING_CHUNK_ALIGNED_TASK_TYPE:
