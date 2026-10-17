@@ -32,7 +32,17 @@ def _line_break(words: list[dict]) -> str:
         raise ValueError(f"Podcast subtitle has no word boundary for line break: {content!r}")
     balanced = [index for index in choices
                 if max(len(_joined(words[:index])), len(_joined(words[index:]))) <= PODCAST_LINE_TARGET_CHARS]
-    split_at = min(balanced or choices, key=lambda index: _break_score(words, index, PODCAST_LINE_TARGET_CHARS))
+    candidates = balanced or choices
+
+    def score(index: int) -> tuple[int, int, int]:
+        left = _joined(words[:index])
+        right = _joined(words[index:])
+        # Prefer a natural punctuation boundary only when it does not create
+        # noticeably uneven lines; line balance is the primary criterion.
+        punctuation = _word_text(words[index - 1]).endswith((",", ";", ":", ".", "?", "!"))
+        return abs(len(left) - len(right)), 0 if punctuation else 1, abs(len(left) - len(content) / 2)
+
+    split_at = min(candidates, key=score)
     return _joined(words[:split_at]) + "\n" + _joined(words[split_at:])
 
 
