@@ -226,7 +226,7 @@ def handle(row: dict) -> dict[str, Any]:
                     language=asr_language,
                     task_id=task_id,
                     run_id=run_id,
-                    diarize=dialogue_stage,
+                    diarize=dialogue_stage and task_type != "podcast",
                 )
         except NoSpeechDetected as exc:
             raise RuntimeError("无人声") from exc
