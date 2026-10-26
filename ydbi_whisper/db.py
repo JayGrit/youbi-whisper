@@ -238,6 +238,18 @@ def finish_whisper_run(run_id: int, status: str, error_message: str | None = Non
         conn.commit()
 
 
+def annotate_whisper_repair_run(run_id: int, parent_run_id: int, start_ms: int, end_ms: int) -> None:
+    with connect() as conn:
+        cur = conn.cursor()
+        cur.execute(
+            """UPDATE whisper_run
+               SET parent_run_id = %s, input_offset_ms = %s, input_end_ms = %s
+               WHERE id = %s""",
+            (parent_run_id, start_ms, end_ms, run_id),
+        )
+        conn.commit()
+
+
 def _seconds_to_ms(value: Any) -> int:
     return int(round(float(value or 0) * 1000))
 
@@ -575,7 +587,7 @@ def save_asr_segments(
                     int(item.get("start_time") or 0),
                     int(item.get("end_time") or 0),
                     str(item.get("speaker") or "") or None,
-                    run_id,
+                    item.get("_whisper_run_id") or run_id,
                     item.get("_whisper_split_id"),
                 ),
             )

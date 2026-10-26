@@ -153,6 +153,7 @@ def normalize_asr_segments(utterances: list[dict]) -> list[dict]:
 
             # whisper 中间产物追踪字段，供最终 ASR 表反查拆分来源
             "_whisper_split_id": u.get("_whisper_split_id"),
+            "_whisper_run_id": u.get("_whisper_run_id"),
 
         }
 

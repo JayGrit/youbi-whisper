@@ -49,8 +49,8 @@ class NoSpeechPipelineTest(unittest.TestCase):
             )
 
         sql = "\n".join(statement for statement, _ in connection.cursor_instance.statements)
-        self.assertIn("UPDATE whisper SET", sql)
-        self.assertIn("WHERE task_id = %s AND sub_stage = %s", sql)
+        self.assertIn("UPDATE distributor_task_stages SET", sql)
+        self.assertIn("WHERE task_id = %s AND stage_name = %s AND sub_stage = %s", sql)
         self.assertNotIn("UPDATE translator", sql)
         self.assertNotIn("UPDATE speaker", sql)
         self.assertNotIn("UPDATE combiner", sql)

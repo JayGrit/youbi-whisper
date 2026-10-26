@@ -17,7 +17,7 @@ class SourceTranscriptionTest(unittest.TestCase):
             with (
                 mock.patch.object(main, "task_work_dir", return_value=Path(tmp)),
                 mock.patch.object(main, "_vocals_input_for", return_value=audio),
-                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ"}),
+                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ", "source_language": "en"}),
                 mock.patch.object(main.db, "create_whisper_run", return_value=7),
                 mock.patch.object(main, "recognize_speech", return_value={
                     "audio_info": {"duration": 2000},
@@ -40,7 +40,7 @@ class SourceTranscriptionTest(unittest.TestCase):
             with (
                 mock.patch.object(main, "task_work_dir", return_value=Path(tmp)),
                 mock.patch.object(main, "_vocals_input_for", return_value=audio),
-                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ"}),
+                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ", "source_language": "en"}),
                 mock.patch.object(main.db, "create_whisper_run", return_value=7),
                 mock.patch.object(main, "recognize_speech", side_effect=NoSpeechDetected("none")),
                 mock.patch.object(main.db, "finish_whisper_run"),
@@ -55,7 +55,7 @@ class SourceTranscriptionTest(unittest.TestCase):
             with (
                 mock.patch.object(main, "task_work_dir", return_value=Path(tmp)),
                 mock.patch.object(main, "_vocals_input_for", return_value=audio),
-                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ"}),
+                mock.patch.object(main.db, "get_task", return_value={"source_url": "https://youtu.be/dQw4w9WgXcQ", "source_language": "en"}),
                 mock.patch.object(main.db, "create_whisper_run", return_value=7),
                 mock.patch.object(main, "recognize_speech", side_effect=NoSpeechDetected("none")),
                 mock.patch.object(main.db, "finish_whisper_run") as finish_run,
@@ -63,7 +63,7 @@ class SourceTranscriptionTest(unittest.TestCase):
                 with self.assertRaisesRegex(RuntimeError, "无人声"):
                     main.handle({"task_id": "task-1", "sub_stage": "main", "task_type": "dubbing", "audio_vocals_url": "minio://audio"})
 
-        finish_run.assert_not_called()
+        finish_run.assert_called_once_with(7, "failed", "无人声")
 
 
 if __name__ == "__main__":

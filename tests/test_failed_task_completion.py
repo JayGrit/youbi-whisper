@@ -46,7 +46,7 @@ class FailedTaskCompletionTest(unittest.TestCase):
             db.mark_success("whisper", "task-1", outputs)
 
         sql = "\n".join(connection.cursor_instance.statements)
-        self.assertIn("UPDATE whisper SET status = %s", sql)
+        self.assertIn("UPDATE distributor_task_stages SET status = %s", sql)
         self.assertTrue(connection.committed)
         upsert.assert_called_once_with("task-1", outputs, connection.cursor_instance)
 

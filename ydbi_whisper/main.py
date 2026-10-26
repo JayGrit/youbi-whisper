@@ -11,7 +11,8 @@ from ydbi_whisper.config import task_work_dir
 from ydbi_whisper.storage import download
 from ydbi_whisper.storage import upload
 from ydbi_whisper.local_export import render_speaker_txt, render_srt, render_txt
-from ydbi_whisper.podcast_dialogue import render_dialogue_srt, split_podcast_dialogue_segments
+from ydbi_whisper.podcast_dialogue import render_dialogue_srt
+from ydbi_whisper.podcast_repair import prepare_segments, repair_podcast_segments
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -176,18 +177,19 @@ def handle(row: dict) -> dict[str, Any]:
             if not asr_language:
                 raise ValueError(f"source_language is missing for task: {task_id}")
             source_name = "configured_source_language"
+        input_audio_url = str(
+            (row.get("audio_vocals_url") if source_transcription and _truthy(row.get("has_background_audio")) else None)
+            or (row.get("audio_source_url") if source_transcription else None)
+            or row.get("audio_dubbing_url")
+            or row.get("audio_vocals_url")
+            or row.get("audio_source_url")
+            or ""
+        )
         run_id = db.create_whisper_run(
             task_id=task_id,
             language=asr_language,
             source_url=source_url or source_name,
-            input_audio_url=str(
-                (row.get("audio_vocals_url") if source_transcription and _truthy(row.get("has_background_audio")) else None)
-                or (row.get("audio_source_url") if source_transcription else None)
-                or row.get("audio_dubbing_url")
-                or row.get("audio_vocals_url")
-                or row.get("audio_source_url")
-                or ""
-            ),
+            input_audio_url=input_audio_url,
             input_local_path=str(vocals),
             input_file_size=vocals.stat().st_size,
             input_sha256=_sha256(vocals),
@@ -253,16 +255,27 @@ def handle(row: dict) -> dict[str, Any]:
                 result = data.get("result") or {}
                 duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
                 from ydbi_whisper.asr_segments import fix_asr_segment_rows
-                asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
                 if task_type == "podcast":
                     # recognize_speech has already regrouped and split long aligned
                     # segments; enforce the shorter final podcast display limit.
-                    asr_segments = split_podcast_dialogue_segments(asr_segments)
+                    asr_segments = prepare_segments(data, run_id)
+                    asr_segments = repair_podcast_segments(
+                        asr_segments,
+                        task_id=task_id,
+                        language=asr_language,
+                        source_url=source_url or source_name,
+                        input_audio_url=input_audio_url,
+                        vocals=vocals,
+                        session=session,
+                        parent_run_id=run_id,
+                        duration_ms=duration_ms,
+                    )
                     srt_text = render_dialogue_srt(asr_segments)
                     if not srt_text.strip():
                         raise RuntimeError("播客字幕生成结果为空")
                     db.save_asr_segments(task_id, asr_segments, run_id)
                 else:
+                    asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
                     dialogue_txt = render_speaker_txt(asr_segments)
                     if not dialogue_txt.strip():
                         raise RuntimeError("对话文本生成结果为空")
