@@ -228,7 +228,7 @@ def handle(row: dict) -> dict[str, Any]:
                     language=asr_language,
                     task_id=task_id,
                     run_id=run_id,
-                    diarize=dialogue_stage and task_type != "podcast",
+                    diarize=dialogue_stage and task_type not in {"podcast", "podcast_new"},
                 )
         except NoSpeechDetected as exc:
             raise RuntimeError("无人声") from exc
@@ -255,7 +255,7 @@ def handle(row: dict) -> dict[str, Any]:
                 result = data.get("result") or {}
                 duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
                 from ydbi_whisper.asr_segments import fix_asr_segment_rows
-                if task_type == "podcast":
+                if task_type in {"podcast", "podcast_new"}:
                     # recognize_speech has already regrouped and split long aligned
                     # segments; enforce the shorter final podcast display limit.
                     asr_segments = prepare_segments(data, run_id)
@@ -338,7 +338,7 @@ def handle(row: dict) -> dict[str, Any]:
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage in DIALOGUE_SUB_STAGES:
-        if task_type == "podcast":
+        if task_type in {"podcast", "podcast_new"}:
             return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}
         return {"dialogue_srt_url": dialogue_srt_url or dialogue_txt_url}
     if sub_stage == "dubbing_alignment":
