@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
 import re
 import time
@@ -14,7 +15,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ydbi_whisper import db
-from ydbi_whisper.podcast_voice_gender import label_podcast_segments
+from ydbi_whisper.podcast_voice_gender import identify_two_voices
 from ydbi_whisper.storage import download
 
 LOG = logging.getLogger("relabel_unfinished_podcasts")
@@ -35,8 +36,6 @@ def claimable_tasks() -> list[dict]:
             "AND (u.status IS NULL OR u.status NOT IN ('success','skipped')) "
             "AND COALESCE(ts.audio_source_url,'')<>'' "
             "AND EXISTS (SELECT 1 FROM whisper_asr_segment a WHERE a.task_id=t.id) "
-            "AND EXISTS (SELECT 1 FROM whisper_asr_segment a WHERE a.task_id=t.id "
-            "AND (a.speaker IS NULL OR a.speaker NOT IN ('0','1'))) "
             "ORDER BY CAST(SUBSTRING_INDEX(t.id,'-',-1) AS UNSIGNED)"
         )
         return cursor.fetchall()
@@ -56,7 +55,7 @@ def process_task(row: dict, work_dir: Path) -> None:
         segments = cursor.fetchall()
     if not segments:
         raise RuntimeError(f"{task_id}: no Whisper subtitles")
-    labeled, summary = label_podcast_segments(audio_path, segments)
+    labeled, summary = identify_two_voices(audio_path, segments)
     # Re-check uploader status in the write transaction. A task may have
     # completed while this script downloaded or analyzed its audio.
     with db.connect() as conn:
@@ -85,19 +84,24 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--poll-seconds", type=int, default=60)
     parser.add_argument("--work-dir", type=Path, default=Path("/tmp/ydbi-podcast-gender"))
+    parser.add_argument("--state-file", type=Path, default=Path("/tmp/ydbi-podcast-gender/processed.json"))
     parser.add_argument("--once", action="store_true", help="Scan once and exit")
     args = parser.parse_args()
     if args.poll_seconds < 5:
         parser.error("--poll-seconds must be at least 5")
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args.work_dir.mkdir(parents=True, exist_ok=True)
+    args.state_file.parent.mkdir(parents=True, exist_ok=True)
+    processed = set(json.loads(args.state_file.read_text()) if args.state_file.exists() else [])
     while True:
-        rows = claimable_tasks()
+        rows = [row for row in claimable_tasks() if row["task_id"] not in processed]
         if not rows:
             LOG.info("No eligible podcast tasks; polling again in %s seconds", args.poll_seconds)
         for row in rows:
             try:
                 process_task(row, args.work_dir)
+                processed.add(row["task_id"])
+                args.state_file.write_text(json.dumps(sorted(processed), ensure_ascii=False, indent=2))
             except Exception:
                 LOG.exception("%s: voice labeling failed; will retry on next poll", row["task_id"])
         if args.once:

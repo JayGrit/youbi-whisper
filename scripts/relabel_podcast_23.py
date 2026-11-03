@@ -11,7 +11,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT))
 
 from ydbi_whisper import db
-from ydbi_whisper.podcast_voice_gender import label_podcast_segments
+from ydbi_whisper.podcast_voice_gender import identify_two_voices
 
 AUDIO = Path("/Users/hoshuuch/Downloads/Why_High_IQ_Won_t_Save_Your_Finances.m4a")
 TASK_ID = "podcast-23"
@@ -31,7 +31,7 @@ def main() -> None:
         segments = cursor.fetchall()
     if not segments:
         raise RuntimeError(f"No Whisper subtitles found for {TASK_ID}")
-    labeled, summary = label_podcast_segments(AUDIO, segments)
+    labeled, summary = identify_two_voices(AUDIO, segments)
     with db.connect() as conn:
         cursor = conn.cursor()
         cursor.executemany(
