@@ -13,6 +13,7 @@ from ydbi_whisper.storage import upload
 from ydbi_whisper.local_export import render_speaker_txt, render_srt, render_txt
 from ydbi_whisper.podcast_dialogue import render_dialogue_srt
 from ydbi_whisper.podcast_repair import prepare_segments, repair_podcast_segments
+from ydbi_whisper.podcast_voice_gender import label_podcast_segments
 from ydbi_whisper.whisper_asr import NoSpeechDetected, align_known_text, recognize_speech
 from ydbi_whisper.worker import run_polling_worker
 
@@ -270,6 +271,8 @@ def handle(row: dict) -> dict[str, Any]:
                         parent_run_id=run_id,
                         duration_ms=duration_ms,
                     )
+                    asr_segments, voice_summary = label_podcast_segments(vocals, asr_segments)
+                    log.info("任务 %s：男女声识别完成 %s", task_id, voice_summary)
                     srt_text = render_dialogue_srt(asr_segments)
                     if not srt_text.strip():
                         raise RuntimeError("播客字幕生成结果为空")
