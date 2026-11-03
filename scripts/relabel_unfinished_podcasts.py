@@ -92,16 +92,23 @@ def main() -> None:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(message)s")
     args.work_dir.mkdir(parents=True, exist_ok=True)
     args.state_file.parent.mkdir(parents=True, exist_ok=True)
-    processed = set(json.loads(args.state_file.read_text()) if args.state_file.exists() else [])
+    state = json.loads(args.state_file.read_text() if args.state_file.exists() else "{}")
+    if isinstance(state, list):
+        state = {task_id: "done" for task_id in state}
     while True:
-        rows = [row for row in claimable_tasks() if row["task_id"] not in processed]
+        rows = [row for row in claimable_tasks() if row["task_id"] not in state]
         if not rows:
             LOG.info("No eligible podcast tasks; polling again in %s seconds", args.poll_seconds)
         for row in rows:
             try:
                 process_task(row, args.work_dir)
-                processed.add(row["task_id"])
-                args.state_file.write_text(json.dumps(sorted(processed), ensure_ascii=False, indent=2))
+                state[row["task_id"]] = "done"
+                args.state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2))
+            except FileNotFoundError as exc:
+                LOG.error("%s: audio object missing; skipping until audio is restored or state cleared: %s",
+                          row["task_id"], exc)
+                state[row["task_id"]] = "missing_audio"
+                args.state_file.write_text(json.dumps(state, ensure_ascii=False, indent=2))
             except Exception:
                 LOG.exception("%s: voice labeling failed; will retry on next poll", row["task_id"])
         if args.once:

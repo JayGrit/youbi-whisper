@@ -72,7 +72,7 @@ def download(ref: str | Path, destination: Path) -> Path:
     except S3Error as exc:
         raise FileNotFoundError(
             f"input does not exist locally or in minio: {source}; tried "
-            f"{object_url(object_info.object_name, object_info.bucket)}: {exc.code}"
+            f"{MINIO_ENDPOINT.rstrip('/')}/{object_info.bucket}/{object_info.object_name}: {exc.code}"
         ) from exc
 
 
