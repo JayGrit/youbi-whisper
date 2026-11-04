@@ -561,7 +561,13 @@ def save_asr_segments(
     task_id: str,
     segments: list[dict[str, Any]],
     run_id: int | None = None,
+    *,
+    require_speakers: bool = False,
 ) -> None:
+    if require_speakers:
+        missing = [index for index, item in enumerate(segments) if str(item.get("speaker")) not in {"0", "1"}]
+        if not segments or missing:
+            raise ValueError(f"Podcast speaker labels must be 0 or 1 for every segment: {task_id}, missing={missing[:10]}")
     with connect() as conn:
         cur = conn.cursor()
         cur.execute("DELETE FROM whisper_asr_segment WHERE task_id = %s", (task_id,))

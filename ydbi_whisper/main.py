@@ -27,6 +27,7 @@ DUBBING_ALIGNMENT_TASK_TYPES = {
     DUBBING_CHUNK_ALIGNED_TASK_TYPE,
 }
 DIALOGUE_SUB_STAGES = {"dialogue", "对话"}
+PODCAST_TASK_TYPES = {"podcast", "podcast_new"}
 PPT_ALIGNMENT_SUB_STAGE = "ppt_alignment"
 
 
@@ -229,7 +230,7 @@ def handle(row: dict) -> dict[str, Any]:
                     language=asr_language,
                     task_id=task_id,
                     run_id=run_id,
-                    diarize=dialogue_stage and task_type not in {"podcast", "podcast_new"},
+                    diarize=dialogue_stage and task_type not in PODCAST_TASK_TYPES,
                 )
         except NoSpeechDetected as exc:
             raise RuntimeError("无人声") from exc
@@ -256,7 +257,7 @@ def handle(row: dict) -> dict[str, Any]:
                 result = data.get("result") or {}
                 duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
                 from ydbi_whisper.asr_segments import fix_asr_segment_rows
-                if task_type in {"podcast", "podcast_new"}:
+                if task_type in PODCAST_TASK_TYPES:
                     # recognize_speech has already regrouped and split long aligned
                     # segments; enforce the shorter final podcast display limit.
                     asr_segments = prepare_segments(data, run_id)
@@ -276,7 +277,7 @@ def handle(row: dict) -> dict[str, Any]:
                     srt_text = render_dialogue_srt(asr_segments)
                     if not srt_text.strip():
                         raise RuntimeError("播客字幕生成结果为空")
-                    db.save_asr_segments(task_id, asr_segments, run_id)
+                    db.save_asr_segments(task_id, asr_segments, run_id, require_speakers=True)
                 else:
                     asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
                     dialogue_txt = render_speaker_txt(asr_segments)
@@ -341,7 +342,7 @@ def handle(row: dict) -> dict[str, Any]:
     if sub_stage == "source_transcription":
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage in DIALOGUE_SUB_STAGES:
-        if task_type in {"podcast", "podcast_new"}:
+        if task_type in PODCAST_TASK_TYPES:
             return {"asr_json_path": f"db://whisper_asr_segment/{task_id}"}
         return {"dialogue_srt_url": dialogue_srt_url or dialogue_txt_url}
     if sub_stage == "dubbing_alignment":
