@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import zipfile
 from pathlib import Path
@@ -27,8 +28,9 @@ def link_existing(source: Path, destination: Path) -> None:
 
 
 def collect_from_zip(task_id: str, destination: Path) -> dict | None:
-    directory = DOWNLOADS / task_id
-    archives = sorted(directory.glob("*.zip")) if directory.exists() else []
+    directories = [directory for directory in DOWNLOADS.iterdir()
+                   if directory.is_dir() and re.fullmatch(re.escape(task_id) + r"(?:\(\d+\))?", directory.name)]
+    archives = [archive for directory in directories for archive in sorted(directory.glob("*.zip"))]
     archives.extend(sorted(DOWNLOADS.glob(f"{task_id}*.zip")))
     # podcast-81 has two ZIPs; the (1) file matches the recorded AliDrive archive.
     if task_id == "podcast-81":
@@ -53,7 +55,7 @@ def collect_from_zip(task_id: str, destination: Path) -> dict | None:
                 temporary.unlink(missing_ok=True)
             return {"source": str(archive), "member": members[0].filename}
     # Some ZIPs have already been unpacked manually.
-    extracted = list(directory.rglob("*.m4a")) if directory.exists() else []
+    extracted = [audio for directory in directories for audio in directory.rglob("*.m4a")]
     extracted.extend(DOWNLOADS.glob(f"{task_id}*.m4a"))
     if len(extracted) == 1:
         link_existing(extracted[0], destination)
