@@ -42,12 +42,11 @@ def parse_object_ref(ref: str) -> ObjectRef | None:
         return None
 
     parsed = urlparse(value)
-    if parsed.scheme == "http" and parsed.hostname == "120.53.92.66" and parsed.port == 9000:
-        prefix = f"/{MINIO_BUCKET}/"
-        if not parsed.path.startswith(prefix):
-            return None
-        object_name = parsed.path[len(prefix) :]
-        return ObjectRef(MINIO_BUCKET, object_name) if object_name else None
+    endpoint = urlparse(MINIO_ENDPOINT)
+    if parsed.scheme == endpoint.scheme and parsed.netloc == endpoint.netloc:
+        bucket, separator, object_name = parsed.path.lstrip("/").partition("/")
+        if separator and bucket in {MINIO_BUCKET, "newyouth"} and object_name:
+            return ObjectRef(bucket, object_name)
 
     return None
 
