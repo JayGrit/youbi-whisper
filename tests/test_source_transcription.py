@@ -56,14 +56,27 @@ class SourceTranscriptionTest(unittest.TestCase):
             render_txt.assert_not_called()
             save_asr.assert_not_called()
 
-    def test_podcast_test_requires_separated_vocals(self) -> None:
+    def test_podcast_test_without_background_audio_uses_source_audio(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with mock.patch.object(main, 'download', return_value=Path(tmp) / 'audio.wav') as download:
+                main._vocals_input_for({
+                    'task_id': 'podcast-test-1',
+                    'task_type': 'podcast_test',
+                    'sub_stage': 'source_transcription',
+                    'has_background_audio': 0,
+                    'audio_source_url': 'minio://source-audio',
+                    'audio_vocals_url': 'minio://stale-vocals',
+                }, Path(tmp))
+            self.assertEqual('minio://source-audio', download.call_args.args[0])
+
+    def test_podcast_test_with_background_audio_requires_vocals(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             with self.assertRaisesRegex(FileNotFoundError, 'audio_vocals_url is missing'):
                 main._vocals_input_for({
                     'task_id': 'podcast-test-1',
                     'task_type': 'podcast_test',
                     'sub_stage': 'source_transcription',
-                    'has_background_audio': 0,
+                    'has_background_audio': 1,
                     'audio_source_url': 'minio://source-audio',
                 }, Path(tmp))
 
