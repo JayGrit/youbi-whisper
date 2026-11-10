@@ -10,6 +10,17 @@ from ydbi_whisper.whisper_asr import NoSpeechDetected
 
 
 class SourceTranscriptionTest(unittest.TestCase):
+    def test_podcast_test_requires_separated_vocals(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            with self.assertRaisesRegex(FileNotFoundError, 'audio_vocals_url is missing'):
+                main._vocals_input_for({
+                    'task_id': 'podcast-test-1',
+                    'task_type': 'podcast_test',
+                    'sub_stage': 'source_transcription',
+                    'has_background_audio': 0,
+                    'audio_source_url': 'minio://source-audio',
+                }, Path(tmp))
+
     def test_source_transcription_uploads_txt_without_writing_asr_segments(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             audio = Path(tmp) / "audio.m4a"

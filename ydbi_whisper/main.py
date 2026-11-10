@@ -97,9 +97,9 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     )
     has_background_audio = row.get("has_background_audio")
     source_transcription_with_vocals = (
-        task_type == "narration"
+        task_type in {"narration", "podcast_test"}
         and source_transcription
-        and _truthy(has_background_audio)
+        and (task_type == "podcast_test" or _truthy(has_background_audio))
     )
     input_url = audio_vocals_url
     input_label = "vocals"
@@ -116,7 +116,7 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     # 如果没有人声音频地址，说明上游 demucs 或下载阶段没有正确产出 vocals
     if not input_url:
         if source_transcription_with_vocals:
-            raise FileNotFoundError(f"audio_vocals_url is missing for narration source transcription task: {task_id}")
+            raise FileNotFoundError(f"audio_vocals_url is missing for source transcription task: {task_id}")
         raise FileNotFoundError(f"audio_vocals_url is missing for task: {task_id}")
     if dubbing_alignment and not dubbing_alignment_audio_url:
         raise FileNotFoundError(f"audio_dubbing_url is missing for dubbing alignment task: {task_id}")
@@ -180,7 +180,7 @@ def handle(row: dict) -> dict[str, Any]:
                 raise ValueError(f"source_language is missing for task: {task_id}")
             source_name = "configured_source_language"
         input_audio_url = str(
-            (row.get("audio_vocals_url") if source_transcription and _truthy(row.get("has_background_audio")) else None)
+            (row.get("audio_vocals_url") if source_transcription and (task_type == "podcast_test" or _truthy(row.get("has_background_audio"))) else None)
             or (row.get("audio_source_url") if source_transcription else None)
             or row.get("audio_dubbing_url")
             or row.get("audio_vocals_url")
