@@ -165,6 +165,7 @@ def handle(row: dict) -> dict[str, Any]:
         dubbing_alignment = task_type in DUBBING_ALIGNMENT_TASK_TYPES and sub_stage == "dubbing_alignment"
         ppt_alignment = task_type == "ppt" and sub_stage == PPT_ALIGNMENT_SUB_STAGE
         source_transcription = sub_stage == "source_transcription"
+        text_only_source = task_type == "podcast_test" and source_transcription
         dialogue_stage = sub_stage in DIALOGUE_SUB_STAGES
         if (narration_task and not source_transcription) or dubbing_alignment or ppt_alignment:
             asr_language = "zh"
@@ -231,18 +232,22 @@ def handle(row: dict) -> dict[str, Any]:
                     task_id=task_id,
                     run_id=run_id,
                     diarize=dialogue_stage and task_type not in PODCAST_TASK_TYPES,
+                    text_only=text_only_source,
                 )
         except NoSpeechDetected as exc:
             raise RuntimeError("无人声") from exc
 
-        # 保存后处理后的 ASR 识别结果
-        # 后处理包括标准化字段、过滤空文本、给 start/end 加 padding、防止片段过紧等
+        # podcast_test 只保存识别文本；其他任务继续按原流程处理时间轴和片段。
         if source_transcription:
             result = data.get("result") or {}
-            duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
-            from ydbi_whisper.asr_segments import fix_asr_segment_rows
-            asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
-            transcript = render_txt(asr_segments, str(result.get("text") or ""))
+            if text_only_source:
+                asr_segments = []
+                transcript = str(result.get("text") or "").strip()
+            else:
+                duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
+                from ydbi_whisper.asr_segments import fix_asr_segment_rows
+                asr_segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
+                transcript = render_txt(asr_segments, str(result.get("text") or ""))
             if not transcript.strip():
                 raise RuntimeError("无人声")
             transcript_path = session / "source_transcription.txt"
@@ -318,14 +323,16 @@ def handle(row: dict) -> dict[str, Any]:
 
         # 统计所有 ASR segment 中的词级时间戳数量
         # 如果运行在 MPS 等不支持 word timestamps 的场景下，这里可能为 0
-        word_count = sum(len(item.get("words") or []) for item in asr_segments)
-
-        log.info(
-            "任务 %s：语音识别完成，共 %d 段、%d 个词",
-            task_id,
-            len(asr_segments),
-            word_count,
-        )
+        if text_only_source:
+            log.info("任务 %s：文字稿生成完成，共 %d 字符", task_id, len(transcript))
+        else:
+            word_count = sum(len(item.get("words") or []) for item in asr_segments)
+            log.info(
+                "任务 %s：语音识别完成，共 %d 段、%d 个词",
+                task_id,
+                len(asr_segments),
+                word_count,
+            )
         db.finish_whisper_run(run_id, "success")
 
     except Exception as exc:

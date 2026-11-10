@@ -90,10 +90,9 @@ def align_known_text(vocals_file: _core.Path, known_segments: list[dict], langua
         raise RuntimeError('Known-text alignment did not return any segments.')
     return {'audio_info': {'duration': duration_ms}, 'result': {'text': _core._word_separator(language).join((str(segment.get('text') or '').strip() for segment in final_segments)), 'utterances': utterances}}
 
-def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str, *, task_id: str | None=None, run_id: int | None=None, diarize: bool=False) -> dict:
-    from pydub import AudioSegment
-    metadata_dir = session / 'metadata'
-    metadata_dir.mkdir(parents=True, exist_ok=True)
+def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str, *, task_id: str | None=None, run_id: int | None=None, diarize: bool=False, text_only: bool=False) -> dict:
+    if not text_only:
+        (session / 'metadata').mkdir(parents=True, exist_ok=True)
     model = _core._load_model()
     runtime_device = str(getattr(model, 'device', _core._runtime_device_for_engine())).lower()
     if run_id is not None:
@@ -103,6 +102,11 @@ def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str
     if diarize and _core.WHISPER_ENGINE != 'whisperx':
         raise RuntimeError('Speaker diarization requires the whisperx engine.')
     raw_result, audio = _transcribe(model, vocals_file, language, runtime_device, word_timestamps)
+    if text_only:
+        transcript = str(raw_result.get('text') or '').strip()
+        if not transcript:
+            raise _core.NoSpeechDetected('无人声')
+        return {'result': {'text': transcript}}
     result = raw_result
     raw_segment_ids: dict[int, int] = {}
     if task_id is not None and run_id is not None:
@@ -156,6 +160,7 @@ def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str
     _core.log.debug('whisper result converted audio=%s utterances=%s', vocals_file, len(utterances))
     if not utterances:
         raise _core.NoSpeechDetected('无人声')
+    from pydub import AudioSegment
     duration_ms = len(AudioSegment.from_file(vocals_file))
     if run_id is not None:
         _core.db.update_whisper_run_runtime(run_id, runtime_device=runtime_device, model_path=_core._model_name_or_path(), input_duration_ms=duration_ms)
