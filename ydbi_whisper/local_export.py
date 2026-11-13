@@ -122,6 +122,7 @@ def transcribe_local_audio(
     output_dir: str | Path | None = "test_outputs",
     task_id: str | None = None,
     write_files: bool = True,
+    write_words: bool = False,
     hotwords: str | None = None,
 ) -> dict[str, Any]:
     audio = Path(audio_path).expanduser().resolve()
@@ -161,6 +162,10 @@ def transcribe_local_audio(
             txt_path.write_text(txt, encoding="utf-8")
             response["srt_path"] = str(srt_path.resolve())
             response["txt_path"] = str(txt_path.resolve())
+            if write_words:
+                words_path = target_dir / f"{audio.stem}.words.txt"
+                words_path.write_text(render_word_timestamps(segments), encoding="utf-8")
+                response["words_path"] = str(words_path.resolve())
             log.info("local export done task_id=%s srt=%s txt=%s", task_id, srt_path.resolve(), txt_path.resolve())
         else:
             log.info("local export done task_id=%s segments=%s", task_id, len(segments))
@@ -176,7 +181,7 @@ def main() -> None:
     parser.add_argument("--language", default="en", help="ASR language code. Default: en.")
     parser.add_argument("--output-dir", default="test_outputs", help="Directory for SRT/TXT outputs. Default: test_outputs.")
     parser.add_argument("--task-id", default=None, help="Task id used for temporary work dir. Default: generated local-export id.")
-    parser.add_argument("--print-words", action="store_true", help="Print word-level timestamps to the terminal.")
+    parser.add_argument("--print-words", action="store_true", help="Print word-level timestamps and save them beside the SRT/TXT files.")
     parser.add_argument("--hotwords", default=None, help="Comma-separated words or short phrases to bias recognition.")
     parser.add_argument("--no-files", action="store_true", help="Do not write SRT/TXT files; print both strings as JSON.")
     parser.add_argument("--debug", action="store_true", help="Print DEBUG logs.")
@@ -189,6 +194,7 @@ def main() -> None:
         output_dir=args.output_dir,
         task_id=args.task_id,
         write_files=not args.no_files,
+        write_words=args.print_words,
         hotwords=args.hotwords,
     )
     print(json.dumps({
@@ -198,6 +204,7 @@ def main() -> None:
         "segments": len(result["segments"]),
         "srt_path": result.get("srt_path"),
         "txt_path": result.get("txt_path"),
+        "words_path": result.get("words_path"),
         "srt": result["srt"] if args.no_files else None,
         "txt": result["txt"] if args.no_files else None,
     }, ensure_ascii=False, indent=2))
