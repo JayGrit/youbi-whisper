@@ -100,6 +100,21 @@ def render_txt(segments: list[dict[str, Any]], fallback_text: str = "") -> str:
     return text + ("\n" if text else "")
 
 
+def render_word_timestamps(segments: list[dict[str, Any]]) -> str:
+    lines: list[str] = []
+    for segment in segments:
+        for word in segment.get("words") or []:
+            text = str(word.get("text") or word.get("word") or "").strip()
+            if not text:
+                continue
+            start = word.get("start_time")
+            end = word.get("end_time")
+            if start is None or end is None:
+                continue
+            lines.append(f"{_srt_timestamp(start)} --> {_srt_timestamp(end)}\t{text}")
+    return "\n".join(lines) + ("\n" if lines else "")
+
+
 def transcribe_local_audio(
     audio_path: str | Path,
     *,
@@ -160,6 +175,7 @@ def main() -> None:
     parser.add_argument("--language", default="en", help="ASR language code. Default: en.")
     parser.add_argument("--output-dir", default="test_outputs", help="Directory for SRT/TXT outputs. Default: test_outputs.")
     parser.add_argument("--task-id", default=None, help="Task id used for temporary work dir. Default: generated local-export id.")
+    parser.add_argument("--print-words", action="store_true", help="Print word-level timestamps to the terminal.")
     parser.add_argument("--no-files", action="store_true", help="Do not write SRT/TXT files; print both strings as JSON.")
     parser.add_argument("--debug", action="store_true", help="Print DEBUG logs.")
     args = parser.parse_args()
@@ -182,6 +198,9 @@ def main() -> None:
         "srt": result["srt"] if args.no_files else None,
         "txt": result["txt"] if args.no_files else None,
     }, ensure_ascii=False, indent=2))
+    if args.print_words:
+        words = render_word_timestamps(result["segments"])
+        print(words if words else "No aligned word timestamps available.", end="" if words else "\n")
 
 
 if __name__ == "__main__":
