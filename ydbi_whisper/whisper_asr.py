@@ -86,6 +86,7 @@ from .semantic_segmentation import (
     _normalized_word_text,
     _regroup_aligned_segments,
     _regroup_words_by_punctuation,
+    _separator_between_words,
     _segment_from_words,
     _segment_too_long,
     _segment_words_with_pysbd,
