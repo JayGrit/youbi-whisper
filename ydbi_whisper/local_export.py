@@ -122,6 +122,7 @@ def transcribe_local_audio(
     output_dir: str | Path | None = "test_outputs",
     task_id: str | None = None,
     write_files: bool = True,
+    hotwords: str | None = None,
 ) -> dict[str, Any]:
     audio = Path(audio_path).expanduser().resolve()
     if not audio.is_file():
@@ -132,7 +133,7 @@ def transcribe_local_audio(
     log.info("local export start task_id=%s audio=%s language=%s session=%s", task_id, audio, language, session)
 
     try:
-        data = recognize_speech(audio, session, language=language)
+        data = recognize_speech(audio, session, language=language, hotwords=hotwords)
         duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
         result = data.get("result") or {}
         segments = fix_asr_segment_rows(result.get("utterances") or [], duration_ms)
@@ -176,6 +177,7 @@ def main() -> None:
     parser.add_argument("--output-dir", default="test_outputs", help="Directory for SRT/TXT outputs. Default: test_outputs.")
     parser.add_argument("--task-id", default=None, help="Task id used for temporary work dir. Default: generated local-export id.")
     parser.add_argument("--print-words", action="store_true", help="Print word-level timestamps to the terminal.")
+    parser.add_argument("--hotwords", default=None, help="Comma-separated words or short phrases to bias recognition.")
     parser.add_argument("--no-files", action="store_true", help="Do not write SRT/TXT files; print both strings as JSON.")
     parser.add_argument("--debug", action="store_true", help="Print DEBUG logs.")
     args = parser.parse_args()
@@ -187,6 +189,7 @@ def main() -> None:
         output_dir=args.output_dir,
         task_id=args.task_id,
         write_files=not args.no_files,
+        hotwords=args.hotwords,
     )
     print(json.dumps({
         "task_id": result["task_id"],

@@ -90,10 +90,10 @@ def align_known_text(vocals_file: _core.Path, known_segments: list[dict], langua
         raise RuntimeError('Known-text alignment did not return any segments.')
     return {'audio_info': {'duration': duration_ms}, 'result': {'text': _core._word_separator(language).join((str(segment.get('text') or '').strip() for segment in final_segments)), 'utterances': utterances}}
 
-def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str, *, task_id: str | None=None, run_id: int | None=None, diarize: bool=False, text_only: bool=False) -> dict:
+def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str, *, task_id: str | None=None, run_id: int | None=None, diarize: bool=False, text_only: bool=False, hotwords: str | None=None) -> dict:
     if not text_only:
         (session / 'metadata').mkdir(parents=True, exist_ok=True)
-    model = _core._load_model()
+    model = _core._load_model(hotwords=hotwords)
     runtime_device = str(getattr(model, 'device', _core._runtime_device_for_engine())).lower()
     if run_id is not None:
         _core.db.update_whisper_run_runtime(run_id, runtime_device=runtime_device, model_path=_core._model_name_or_path())

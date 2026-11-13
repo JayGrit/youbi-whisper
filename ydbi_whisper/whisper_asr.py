@@ -54,17 +54,20 @@ def _model_name_or_path() -> str:
         return str(local_model)
     return WHISPER_MODEL
 
-def _load_model():
+def _load_model(*, hotwords: str | None = None):
     global _MODEL
-    if _MODEL is None:
+    if _MODEL is None or hotwords:
         runtime_device = _runtime_device_for_engine()
         log.debug('whisper loading model engine=%s model=%s model_path=%s configured_device=%s runtime_device=%s download_root=%s torch_home=%s', WHISPER_ENGINE, WHISPER_MODEL, _model_name_or_path(), WHISPER_RUNTIME_DEVICE, runtime_device, WHISPER_DOWNLOAD_ROOT or None, TORCH_HOME)
         import whisperx
         model_name_or_path = _model_name_or_path()
         if not Path(model_name_or_path).expanduser().exists():
             log.info('正在下载语音识别模型 %s（首次使用）', WHISPER_MODEL)
-        _MODEL = whisperx.load_model(model_name_or_path, runtime_device, compute_type=WHISPERX_COMPUTE_TYPE, language=None, vad_method=WHISPERX_VAD_METHOD, vad_options=_whisperx_vad_options(), download_root=WHISPER_DOWNLOAD_ROOT or None)
+        model = whisperx.load_model(model_name_or_path, runtime_device, compute_type=WHISPERX_COMPUTE_TYPE, language=None, vad_method=WHISPERX_VAD_METHOD, vad_options=_whisperx_vad_options(), download_root=WHISPER_DOWNLOAD_ROOT or None, **({'asr_options': {'hotwords': hotwords}} if hotwords else {}))
         log.debug('whisper model loaded engine=%s model=%s model_path=%s runtime_device=%s', WHISPER_ENGINE, WHISPER_MODEL, _model_name_or_path(), runtime_device)
+        if hotwords:
+            return model
+        _MODEL = model
     return _MODEL
 _WTPSPLIT_MODEL = None
 _WTPSPLIT_UNAVAILABLE = False
