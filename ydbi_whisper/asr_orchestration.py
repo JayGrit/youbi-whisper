@@ -54,6 +54,7 @@ def align_known_text(vocals_file: _core.Path, known_segments: list[dict], langua
     if task_id is not None and run_id is not None:
         raw_segment_ids = _core.db.save_whisper_raw_segments(run_id, task_id, raw_result['segments'])
     aligned_result = _core._align_whisperx_result(whisperx, raw_result, audio, language, runtime_device, task_id=task_id)
+    _core._merge_latin_character_words(aligned_result.get('segments') or [])
     aligned_segments, narration_segments = _core._narration_segments_without_punctuation_timing(aligned_result.get('segments') or [], language)
     _core._assign_word_indexes(aligned_segments)
     word_ids: dict[int, int] = {}
@@ -114,6 +115,7 @@ def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str
     if _core.WHISPER_ENGINE == 'whisperx' and audio is not None:
         import whisperx
         aligned_result = _core._align_whisperx_result(whisperx, raw_result, audio, language, runtime_device, task_id=task_id)
+        _core._merge_latin_character_words(aligned_result.get('segments') or [])
         if diarize:
             aligned_result = _core._diarize_whisperx_result(whisperx, aligned_result, audio, runtime_device, task_id=task_id)
         aligned_segments = aligned_result.get('segments') or []

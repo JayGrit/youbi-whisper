@@ -74,8 +74,64 @@ def _narration_segments_without_punctuation_timing(segments: list[dict], languag
 def _word_separator(language: str | None) -> str:
     return '' if _core._sentence_segmenter_language(language or 'en') in {'zh', 'ja'} else ' '
 
+def _separator_between_words(previous: str, current: str, language: str | None=None) -> str:
+    if _core._word_separator(language):
+        return ' '
+    if _core.re.match(r'[A-Za-z0-9]', current) and (
+        _core.re.search(r'[A-Za-z0-9]$', previous) or previous in {',', '.', ';', ':', '!', '?'}
+    ):
+        return ' '
+    return ''
+
 def _join_word_texts(words: list[dict], language: str | None=None) -> str:
-    return _core._word_separator(language).join((_core._word_text(word) for word in words if _core._word_text(word))).strip()
+    texts = [_core._word_text(word) for word in words if _core._word_text(word)]
+    parts: list[str] = []
+    previous = ''
+    for text in texts:
+        if parts:
+            parts.append(_core._separator_between_words(previous, text, language))
+        parts.append(text)
+        previous = text
+    return ''.join(parts).strip()
+
+def _merge_latin_character_words(segments: list[dict]) -> None:
+    """Restore English word boundaries lost by the Chinese WhisperX aligner."""
+    for segment in segments:
+        text = str(segment.get('text') or '')
+        words = segment.get('words') or []
+        if not text or not words:
+            continue
+        positions: list[tuple[int, int]] = []
+        cursor = 0
+        for word in words:
+            token = _core._word_text(word)
+            while cursor < len(text) and text[cursor].isspace():
+                cursor += 1
+            if not token or not text.startswith(token, cursor):
+                positions = []
+                break
+            end = cursor + len(token)
+            positions.append((cursor, end))
+            cursor = end
+        if len(positions) != len(words) or text[cursor:].strip():
+            continue
+        merged: list[dict] = []
+        positions_by_end = 0
+        for word, (start, end) in zip(words, positions):
+            token = _core._word_text(word)
+            if (
+                merged
+                and _core.re.fullmatch(r'[A-Za-z0-9]', token)
+                and _core.re.fullmatch(r'[A-Za-z0-9]+', _core._word_text(merged[-1]))
+                and positions_by_end == start
+            ):
+                merged[-1]['word'] = _core._word_text(merged[-1]) + token
+                if word.get('end') is not None:
+                    merged[-1]['end'] = word['end']
+            else:
+                merged.append(dict(word))
+            positions_by_end = end
+        segment['words'] = merged
 
 def _assign_word_indexes(segments: list[dict]) -> None:
     global_word_index = 0
@@ -374,18 +430,20 @@ def _segment_words_with_pysbd(words: list[dict], language: str) -> list[dict]:
     word_spans = []
     text_parts = []
     cursor = 0
+    previous = ''
     for word in words:
         text = _core._word_text(word)
         if not text:
             continue
-        separator = _core._word_separator(language)
-        if text_parts and separator:
+        separator = _core._separator_between_words(previous, text, language) if text_parts else ''
+        if separator:
             text_parts.append(separator)
             cursor += len(separator)
         start = cursor
         text_parts.append(text)
         cursor += len(text)
         word_spans.append((start, cursor, word))
+        previous = text
     full_text = ''.join(text_parts).strip()
     if not full_text or not word_spans:
         return []

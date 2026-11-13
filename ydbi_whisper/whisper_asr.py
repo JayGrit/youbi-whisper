@@ -79,6 +79,7 @@ from .semantic_segmentation import (
     _convert_words,
     _is_punctuation_only,
     _join_word_texts,
+    _merge_latin_character_words,
     _long_split_reason,
     _minor_punctuation_split_at,
     _narration_segments_without_punctuation_timing,
