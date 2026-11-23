@@ -244,14 +244,17 @@ def handle(row: dict) -> dict[str, Any]:
                     run_id=run_id,
                     diarize=dialogue_stage and task_type not in PODCAST_TASK_TYPES,
                     text_only=text_only_source,
-                    **({"segments_only": True} if preview_source else {}),
                 )
         except NoSpeechDetected as exc:
             raise RuntimeError("无人声") from exc
 
         # podcast_test 只保存识别文本；其他任务继续按原流程处理时间轴和片段。
         if preview_source:
-            asr_segments = (data.get("result") or {}).get("utterances") or []
+            from ydbi_whisper.asr_segments import fix_asr_segment_rows
+
+            duration_ms = int((data.get("audio_info") or {}).get("duration") or 0)
+            utterances = (data.get("result") or {}).get("utterances") or []
+            asr_segments = fix_asr_segment_rows(utterances, duration_ms)
             srt_text = render_srt(asr_segments)
             if not srt_text.strip():
                 raise RuntimeError("Whisper preview SRT is empty")

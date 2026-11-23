@@ -91,7 +91,7 @@ def align_known_text(vocals_file: _core.Path, known_segments: list[dict], langua
         raise RuntimeError('Known-text alignment did not return any segments.')
     return {'audio_info': {'duration': duration_ms}, 'result': {'text': _core._word_separator(language).join((str(segment.get('text') or '').strip() for segment in final_segments)), 'utterances': utterances}}
 
-def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str, *, task_id: str | None=None, run_id: int | None=None, diarize: bool=False, text_only: bool=False, segments_only: bool=False, hotwords: str | None=None) -> dict:
+def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str, *, task_id: str | None=None, run_id: int | None=None, diarize: bool=False, text_only: bool=False, hotwords: str | None=None) -> dict:
     if not text_only:
         (session / 'metadata').mkdir(parents=True, exist_ok=True)
     model = _core._load_model(hotwords=hotwords)
@@ -112,13 +112,6 @@ def recognize_speech(vocals_file: _core.Path, session: _core.Path, language: str
     raw_segment_ids: dict[int, int] = {}
     if task_id is not None and run_id is not None:
         raw_segment_ids = _core.db.save_whisper_raw_segments(run_id, task_id, raw_result.get('segments', []))
-    if segments_only:
-        utterances = [
-            {'start_time': round(segment['start'] * 1000), 'end_time': round(segment['end'] * 1000),
-             'text': segment['text']}
-            for segment in raw_result.get('segments', [])
-        ]
-        return {'result': {'utterances': utterances}}
     if _core.WHISPER_ENGINE == 'whisperx' and audio is not None:
         import whisperx
         aligned_result = _core._align_whisperx_result(whisperx, raw_result, audio, language, runtime_device, task_id=task_id)
