@@ -150,6 +150,10 @@ def handle(row: dict) -> dict[str, Any]:
     task_id = row["task_id"]
     sub_stage = str(row.get("sub_stage") or "main")
 
+    if sub_stage == "closeread_transcription":
+        from .closeread import transcribe
+        return transcribe(task_id)
+
     # 获取当前任务的本地工作目录
     # 后续会在这个目录下存放临时音频、metadata 等文件
     session = task_work_dir(task_id)
