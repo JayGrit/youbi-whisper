@@ -917,6 +917,7 @@ def find_ready(stage_name: str) -> dict[str, Any] | None:
                 "task_type",
                 "source_language",
                 "audio_source_url",
+                "video_source_url",
                 "audio_vocals_url",
                 "audio_dubbing_url",
                 "has_background_audio",

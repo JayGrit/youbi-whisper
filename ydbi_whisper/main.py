@@ -103,7 +103,10 @@ def _vocals_input_for(row: dict, session: Path) -> Path:
     )
     input_url = audio_vocals_url
     input_label = "vocals"
-    if source_transcription and not source_transcription_with_vocals:
+    if source_transcription and task_type == "aishorts_preview":
+        input_url = str(row.get("video_source_url") or "").strip()
+        input_label = "source video"
+    elif source_transcription and not source_transcription_with_vocals:
         input_url = str(row.get("audio_source_url") or "").strip()
         input_label = "source audio"
     elif not input_url and not source_transcription_with_vocals:
@@ -168,6 +171,7 @@ def handle(row: dict) -> dict[str, Any]:
         dubbing_alignment = task_type in DUBBING_ALIGNMENT_TASK_TYPES and sub_stage == "dubbing_alignment"
         ppt_alignment = task_type == "ppt" and sub_stage == PPT_ALIGNMENT_SUB_STAGE
         source_transcription = sub_stage == "source_transcription"
+        preview_source = task_type == "aishorts_preview" and source_transcription
         text_only_source = task_type == "podcast_test" and source_transcription
         dialogue_stage = sub_stage in DIALOGUE_SUB_STAGES
         if (narration_task and not source_transcription) or dubbing_alignment or ppt_alignment:
@@ -176,6 +180,9 @@ def handle(row: dict) -> dict[str, Any]:
                 source_name = "ppt_alignment"
             else:
                 source_name = "dubbing_alignment" if dubbing_alignment else "narration"
+        elif preview_source:
+            asr_language = "en"
+            source_name = "aishorts_preview"
         else:
             asr_language = _asr_language_from_source_language(
                 task.get("source_language") or row.get("source_language")
@@ -185,6 +192,7 @@ def handle(row: dict) -> dict[str, Any]:
             source_name = "configured_source_language"
         input_audio_url = str(
             (row.get("audio_vocals_url") if source_transcription and (_truthy(row.get("has_background_audio")) or (task_type == "podcast_test" and row.get("has_background_audio") is None)) else None)
+            or (row.get("video_source_url") if preview_source else None)
             or (row.get("audio_source_url") if source_transcription else None)
             or row.get("audio_dubbing_url")
             or row.get("audio_vocals_url")
@@ -236,12 +244,23 @@ def handle(row: dict) -> dict[str, Any]:
                     run_id=run_id,
                     diarize=dialogue_stage and task_type not in PODCAST_TASK_TYPES,
                     text_only=text_only_source,
+                    **({"segments_only": True} if preview_source else {}),
                 )
         except NoSpeechDetected as exc:
             raise RuntimeError("无人声") from exc
 
         # podcast_test 只保存识别文本；其他任务继续按原流程处理时间轴和片段。
-        if source_transcription:
+        if preview_source:
+            asr_segments = (data.get("result") or {}).get("utterances") or []
+            srt_text = render_srt(asr_segments)
+            if not srt_text.strip():
+                raise RuntimeError("Whisper preview SRT is empty")
+            path = session / "source_en.srt"
+            path.write_text(srt_text, encoding="utf-8")
+            preview_srt_url = upload(
+                path, f"{task_id}/whisper/source_en_{run_id}.srt", "application/x-subrip; charset=utf-8"
+            )
+        elif source_transcription:
             result = data.get("result") or {}
             if text_only_source:
                 asr_segments = []
@@ -350,6 +369,8 @@ def handle(row: dict) -> dict[str, Any]:
     # ASR 结果在数据库中的引用地址
     # 这里不是实际文件路径，而是一个逻辑引用，表示从 whisper_asr_segment 表读取该任务分段
     if sub_stage == "source_transcription":
+        if task_type == "aishorts_preview":
+            return {"whisper_srt_url": preview_srt_url}
         return {"source_transcript_txt_url": transcript_url}
     if sub_stage in DIALOGUE_SUB_STAGES:
         if task_type in PODCAST_TASK_TYPES:

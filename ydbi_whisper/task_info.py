@@ -46,6 +46,7 @@ TASK_OPTIONS_FIELDS = {
     "upload_platforms",
 }
 TASK_PROCESSING_FIELDS = {
+    "whisper_srt_url",
     "audio_vocals_url",
     "audio_bgm_url",
     "audio_dubbing_url",
