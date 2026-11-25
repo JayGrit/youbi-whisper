@@ -25,13 +25,22 @@ def _script_gaps(words, script, duration):
             position = original[a + shift]
             first, _ = bounds.get(index, (position, position))
             bounds[index] = first, position
+    def nearest_anchor(indices, edge, time_key):
+        for index in indices:
+            if abs(words[index][time_key] - edge) > 1.5:
+                break
+            if index in bounds:
+                return bounds[index]
+        return None
+
     for index in range(len(words) + 1):
         start = words[index - 1]["end"] if index else 0
         end = words[index]["start"] if index < len(words) else duration
         if end - start + 1e-9 < 3:
             continue
-        left = bounds.get(index - 1) if index else (-1, -1)
-        right = bounds.get(index) if index < len(words) else (len(script), len(script))
+        left = nearest_anchor(range(index - 1, -1, -1), start, "end") if index else (-1, -1)
+        right = (nearest_anchor(range(index, len(words)), end, "start")
+                 if index < len(words) else (len(script), len(script)))
         if left and right:
             missing = script[left[1] + 1:right[0]].strip()
             if _normalize(missing):
