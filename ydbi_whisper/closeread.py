@@ -14,7 +14,7 @@ def _model():
     from faster_whisper import WhisperModel
 
     device = whisper_asr._runtime_device_for_engine()
-    return WhisperModel(whisper_asr._model_name_or_path(), device=device,
+    return WhisperModel(whisper_asr._model_name_or_path(), device=device, num_workers=2,
                         compute_type="int8" if device == "cpu" else "float16",
                         download_root=whisper_asr.WHISPER_DOWNLOAD_ROOT)
 

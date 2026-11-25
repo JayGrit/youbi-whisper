@@ -1,6 +1,8 @@
 """Recover known CloseRead speech missing from the first ASR pass."""
 
+from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
+from threading import Lock
 import logging
 import re
 
@@ -55,20 +57,22 @@ def _matched_words(expected, words):
 def repair(words, script, duration, audio, model, aligner):
     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-    recovered, diagnostics = [], []
-    for start, end, missing in _script_gaps(words, script, duration):
+    alignment_lock = Lock()
+
+    def repair_gap(gap_info):
+        start, end, missing = gap_info
         diagnostic = {"start": start, "end": end, "recovered": 0}
-        diagnostics.append(diagnostic)
         gap = audio[round(start * RATE):round(end * RATE)]
         if not get_speech_timestamps(gap, VadOptions(min_speech_duration_ms=100)):
             diagnostic["status"] = "silent"
-            continue
+            return [], diagnostic
         left, right = max(0, start - PADDING), min(duration, end + PADDING)
         window = audio[round(left * RATE):round(right * RATE)]
         forced = []
         try:
             language = "zh" if re.search(r"[\u3400-\u9fff]", missing) else "en"
-            result = aligner().align(window, missing, language=language, regroup=False, verbose=None)
+            with alignment_lock:
+                result = aligner().align(window, missing, language=language, regroup=False, verbose=None)
             if result:
                 forced = [{"text": word.word.strip(), "start": left + word.start, "end": left + word.end}
                           for segment in result.segments for word in segment.words
@@ -103,7 +107,6 @@ def repair(words, script, duration, audio, model, aligner):
                     continue
                 positions.append((first, last, word))
                 accepted.append(dict(word, timing_source=source))
-        recovered.extend(accepted)
         expected = _normalize(missing)
         actual = "".join(_normalize(w["text"]) for w in sorted(accepted, key=lambda w: w["start"]))
         remaining = sum(a1-a0 for tag, a0, a1, _, _ in
@@ -112,4 +115,14 @@ def repair(words, script, duration, audio, model, aligner):
         diagnostic.update(recovered=len(accepted), remaining_characters=remaining,
                           status="complete" if not remaining else "partial" if accepted else "unresolved")
         log.info("CloseRead speech gap: %s", diagnostic)
+        return accepted, diagnostic
+
+    gaps = list(_script_gaps(words, script, duration))
+    if not gaps:
+        return words, []
+    recovered, diagnostics = [], []
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        for additions, report in executor.map(repair_gap, gaps):
+            recovered.extend(additions)
+            diagnostics.append(report)
     return sorted([*words, *recovered], key=lambda word: word["start"]), diagnostics
