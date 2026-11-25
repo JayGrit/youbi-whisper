@@ -1,10 +1,7 @@
 """Recover known CloseRead speech missing from the first ASR pass."""
 
-from concurrent.futures import ThreadPoolExecutor
 from difflib import SequenceMatcher
-from threading import Lock
 import logging
-import re
 
 log = logging.getLogger(__name__)
 RATE = 16000
@@ -54,50 +51,63 @@ def _matched_words(expected, words):
         offset = end
 
 
-def repair(words, script, duration, audio, model, aligner):
+def repair(words, script, duration, audio, model, aligner, *, forced_words=None):
     from faster_whisper.vad import VadOptions, get_speech_timestamps
 
-    alignment_lock = Lock()
+    import numpy as np
 
-    def repair_gap(gap_info):
-        start, end, missing = gap_info
-        diagnostic = {"start": start, "end": end, "recovered": 0}
-        gap = audio[round(start * RATE):round(end * RATE)]
-        if not get_speech_timestamps(gap, VadOptions(min_speech_duration_ms=100)):
-            diagnostic["status"] = "silent"
-            return [], diagnostic
-        left, right = max(0, start - PADDING), min(duration, end + PADDING)
-        window = audio[round(left * RATE):round(right * RATE)]
-        forced = []
+    gaps = list(_script_gaps(words, script, duration))
+    diagnostics = [{"start": start, "end": end, "recovered": 0, "status": "silent"}
+                   for start, end, _ in gaps]
+    voiced = [(i, start, end, missing) for i, (start, end, missing) in enumerate(gaps)
+              if get_speech_timestamps(audio[round(start * RATE):round(end * RATE)],
+                                       VadOptions(min_speech_duration_ms=100))]
+    if not voiced:
+        return words, diagnostics
+    forced = forced_words or []
+    try:
+        result = None if forced_words is not None else aligner().align(audio, script, language="zh", regroup=False, verbose=None)
+        if result:
+            forced = [{"text": w.word.strip(), "start": float(w.start), "end": float(w.end)}
+                      for segment in result.segments for w in segment.words if w.end > w.start]
+    except Exception:
+        log.exception("CloseRead full-track forced alignment failed")
+
+    chunks, offsets, accepted = [], [], {}
+    cursor = 0
+    for i, start, end, missing in voiced:
+        accepted[i] = [w for w, _, _ in _matched_words(
+            missing, [w for w in forced if start <= w["start"] < w["end"] <= end])]
+        if _normalize("".join(w["text"] for w in accepted[i])) == _normalize(missing):
+            continue
+        first, last = round(start * RATE), round(end * RATE)
+        chunk = audio[first:last]
+        offsets.append((i, cursor, cursor + len(chunk), first))
+        chunks.extend((chunk, np.zeros(RATE // 2, dtype=audio.dtype)))
+        cursor += len(chunk) + RATE // 2
+
+    recognized = {}
+    if chunks:
         try:
-            language = "zh" if re.search(r"[\u3400-\u9fff]", missing) else "en"
-            with alignment_lock:
-                result = aligner().align(window, missing, language=language, regroup=False, verbose=None)
-            if result:
-                forced = [{"text": word.word.strip(), "start": left + word.start, "end": left + word.end}
-                          for segment in result.segments for word in segment.words
-                          if word.end > word.start]
+            segments, _ = model.transcribe(np.concatenate(chunks), word_timestamps=True,
+                                           multilingual=True, condition_on_previous_text=False)
+            for segment in segments:
+                for w in segment.words or []:
+                    begin, finish = round(w.start * RATE), round(w.end * RATE)
+                    for i, left, right, original in offsets:
+                        if left <= begin < finish <= right:
+                            recognized.setdefault(i, []).append({
+                                "text": w.word.strip(), "start": (original + begin - left) / RATE,
+                                "end": (original + finish - left) / RATE,
+                            })
+                            break
         except Exception:
-            log.exception("CloseRead local forced alignment failed at %.2f–%.2f", start, end)
+            log.exception("CloseRead combined gap recognition failed")
 
-        try:
-            # Retain the gap edges so zero-duration boundary words get a second chance.
-            if _normalize("".join(word["text"] for word in forced)) == _normalize(missing):
-                left = max(left, min(w["start"] for w in forced) - PADDING)
-                right = min(right, max(w["end"] for w in forced) + PADDING)
-            segments, _ = model.transcribe(
-                audio[round(left * RATE):round(right * RATE)], word_timestamps=True,
-                multilingual=True, condition_on_previous_text=False,
-            )
-            candidates = [{"text": word.word.strip(), "start": left + word.start, "end": left + word.end}
-                          for segment in segments for word in segment.words or []]
-        except Exception:
-            log.exception("CloseRead local recognition failed at %.2f–%.2f", start, end)
-            candidates = []
-
-        accepted = []
+    recovered = []
+    for i, start, end, missing in voiced:
         positions = []
-        for source, batch in (("retry", candidates), ("forced", forced)):
+        for source, batch in (("retry", recognized.get(i, [])), ("forced", accepted[i])):
             for word, first, last in _matched_words(missing, batch):
                 if not start <= word["start"] < word["end"] <= end + 1e-9:
                     continue
@@ -105,24 +115,15 @@ def repair(words, script, duration, audio, model, aligner):
                             or first >= hi and word["start"] >= other["end"])
                        for lo, hi, other in positions):
                     continue
-                positions.append((first, last, word))
-                accepted.append(dict(word, timing_source=source))
+                positions.append((first, last, dict(word, timing_source=source)))
+        additions = [word for _, _, word in sorted(positions, key=lambda entry: entry[0])]
+        recovered.extend(additions)
         expected = _normalize(missing)
-        actual = "".join(_normalize(w["text"]) for w in sorted(accepted, key=lambda w: w["start"]))
+        actual = _normalize("".join(w["text"] for w in additions))
         remaining = sum(a1-a0 for tag, a0, a1, _, _ in
                         SequenceMatcher(None, expected, actual, autojunk=False).get_opcodes()
                         if tag in {"delete", "replace"})
-        diagnostic.update(recovered=len(accepted), remaining_characters=remaining,
-                          status="complete" if not remaining else "partial" if accepted else "unresolved")
-        log.info("CloseRead speech gap: %s", diagnostic)
-        return accepted, diagnostic
-
-    gaps = list(_script_gaps(words, script, duration))
-    if not gaps:
-        return words, []
-    recovered, diagnostics = [], []
-    with ThreadPoolExecutor(max_workers=2) as executor:
-        for additions, report in executor.map(repair_gap, gaps):
-            recovered.extend(additions)
-            diagnostics.append(report)
+        diagnostics[i].update(recovered=len(additions), remaining_characters=remaining,
+                              status="complete" if not remaining else "partial" if additions else "unresolved")
+        log.info("CloseRead speech gap: %s", diagnostics[i])
     return sorted([*words, *recovered], key=lambda word: word["start"]), diagnostics
