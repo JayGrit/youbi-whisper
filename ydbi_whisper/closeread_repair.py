@@ -127,3 +127,35 @@ def repair(words, script, duration, audio, model, aligner, *, forced_words=None)
                               status="complete" if not remaining else "partial" if additions else "unresolved")
         log.info("CloseRead speech gap: %s", diagnostics[i])
     return sorted([*words, *recovered], key=lambda word: word["start"]), diagnostics
+
+
+def repair_up_to_three_rounds(words, script, duration, audio, model, aligner):
+    """Reuse one forced alignment across at most three batches of gap recognition."""
+    from faster_whisper.vad import VadOptions, get_speech_timestamps
+
+    class CachedAlignment:
+        def __init__(self):
+            self.loaded = False
+            self.result = None
+
+        def align(self, *args, **kwargs):
+            if not self.loaded:
+                self.loaded = True
+                self.result = aligner().align(*args, **kwargs)
+            return self.result
+
+    cached = CachedAlignment()
+    reports = []
+    for round_number in range(1, 4):
+        repaired, diagnostics = repair(words, script, duration, audio, model, lambda: cached)
+        reports.extend(dict(report, round=round_number) for report in diagnostics)
+        if len(repaired) == len(words):
+            break
+        words = repaired
+    for start, end, _ in _script_gaps(words, script, duration):
+        if end - start > 30 and get_speech_timestamps(
+            audio[round(start * RATE):round(end * RATE)], VadOptions(min_speech_duration_ms=100)
+        ):
+            raise ValueError(f"CloseRead speech remains unaligned at {start:.2f}–{end:.2f}s "
+                             f"({end - start:.2f}s)")
+    return words, reports

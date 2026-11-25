@@ -6,7 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from . import db, storage, whisper_asr
-from .closeread_repair import repair
+from .closeread_repair import repair_up_to_three_rounds
 
 
 @lru_cache(maxsize=1)
@@ -60,8 +60,9 @@ def transcribe(task_id):
             from faster_whisper.audio import decode_audio
 
             script = "\n".join(part["text"] for part in speech["parts"])
-            timeline, diagnostics = repair(timeline, script, duration, decode_audio(str(audio)),
-                                           _model(), _aligner)
+            timeline, diagnostics = repair_up_to_three_rounds(
+                timeline, script, duration, decode_audio(str(audio)), _model(), _aligner,
+            )
             for index, word in enumerate(timeline, 1):
                 word["word_id"] = index
             recovered = [{"words": [{"word": word["text"], "start": word["start"], "end": word["end"]}]}
