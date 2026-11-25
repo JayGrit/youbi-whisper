@@ -6,6 +6,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from . import db, storage, whisper_asr
+from .closeread_repair import repair
 
 
 @lru_cache(maxsize=1)
@@ -18,11 +19,21 @@ def _model():
                         download_root=whisper_asr.WHISPER_DOWNLOAD_ROOT)
 
 
+@lru_cache(maxsize=1)
+def _aligner():
+    from stable_whisper import load_faster_whisper
+
+    device = whisper_asr._runtime_device_for_engine()
+    return load_faster_whisper(whisper_asr._model_name_or_path(), device=device,
+                               compute_type="int8" if device == "cpu" else "float16",
+                               download_root=whisper_asr.WHISPER_DOWNLOAD_ROOT)
+
+
 def transcribe(task_id):
     with db.connect() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT audio_url FROM product_closeread_artifact WHERE task_id=%s", (task_id,))
-        audio_url = cur.fetchone()[0]
+        cur.execute("SELECT audio_url, speech_blocks FROM product_closeread_artifact WHERE task_id=%s", (task_id,))
+        audio_url, speech_blocks = cur.fetchone()
     with TemporaryDirectory() as work:
         directory = Path(work)
         audio = storage.download(audio_url, directory / "speech")
@@ -43,8 +54,23 @@ def transcribe(task_id):
             database_segments.append({"words": words})
         if not timeline:
             raise ValueError("CloseRead audio has no recognized words")
+        diagnostics = []
+        speech = json.loads(speech_blocks or "null")
+        if isinstance(speech, dict) and speech.get("parts"):
+            from faster_whisper.audio import decode_audio
+
+            script = "\n".join(part["text"] for part in speech["parts"])
+            timeline, diagnostics = repair(timeline, script, duration, decode_audio(str(audio)),
+                                           _model(), _aligner)
+            for index, word in enumerate(timeline, 1):
+                word["word_id"] = index
+            recovered = [{"words": [{"word": word["text"], "start": word["start"], "end": word["end"]}]}
+                         for word in timeline if "timing_source" in word]
+            database_segments.extend(recovered)
+            database_segments.sort(key=lambda segment: segment["words"][0]["start"]
+                                   if segment["words"] else duration)
         output = directory / "words.json"
-        output.write_text(json.dumps({"duration": duration, "words": timeline}, ensure_ascii=False),
+        output.write_text(json.dumps({"duration": duration, "words": timeline, "gap_repairs": diagnostics}, ensure_ascii=False),
                           encoding="utf-8")
         words_url = storage.upload(output, f"{task_id}/closeread/words.json", "application/json")
         db.save_word_timestamps(task_id, database_segments)
