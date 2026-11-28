@@ -34,9 +34,13 @@ def transcribe(task_id):
         cur = conn.cursor()
         cur.execute("SELECT audio_url, speech_blocks, generation FROM product_closeread_artifact WHERE task_id=%s", (task_id,))
         audio_url, speech_blocks, generation = cur.fetchone()
-        cur.execute("""SELECT body FROM product_closeread_reading
-                       WHERE task_id=%s ORDER BY `index`""", (task_id,))
+        cur.execute("""SELECT body FROM product_closeread_script_part
+                       WHERE task_id=%s ORDER BY paragraph_index,`index`""", (task_id,))
         script = "\n".join(body for (body,) in cur.fetchall())
+        if not script:
+            cur.execute("""SELECT body FROM product_closeread_reading
+                           WHERE task_id=%s ORDER BY `index`""", (task_id,))
+            script = "\n".join(body for (body,) in cur.fetchall())
         if not script:
             cur.execute("""SELECT body FROM product_closeread_reading_part
                            WHERE task_id=%s AND generation=%s ORDER BY position""", (task_id, generation))
