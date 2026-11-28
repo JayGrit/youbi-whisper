@@ -32,8 +32,15 @@ def _aligner():
 def transcribe(task_id):
     with db.connect() as conn:
         cur = conn.cursor()
-        cur.execute("SELECT audio_url, speech_blocks FROM product_closeread_artifact WHERE task_id=%s", (task_id,))
-        audio_url, speech_blocks = cur.fetchone()
+        cur.execute("SELECT audio_url, speech_blocks, generation FROM product_closeread_artifact WHERE task_id=%s", (task_id,))
+        audio_url, speech_blocks, generation = cur.fetchone()
+        cur.execute("""SELECT body FROM product_closeread_reading_part
+                       WHERE task_id=%s AND generation=%s ORDER BY position""", (task_id, generation))
+        script = "\n".join(body for (body,) in cur.fetchall())
+        if not script:
+            speech = json.loads(speech_blocks or "null")
+            if isinstance(speech, dict) and speech.get("parts"):
+                script = "\n".join(part["text"] for part in speech["parts"])
     with TemporaryDirectory() as work:
         directory = Path(work)
         audio = storage.download(audio_url, directory / "speech")
@@ -55,11 +62,9 @@ def transcribe(task_id):
         if not timeline:
             raise ValueError("CloseRead audio has no recognized words")
         diagnostics = []
-        speech = json.loads(speech_blocks or "null")
-        if isinstance(speech, dict) and speech.get("parts"):
+        if script:
             from faster_whisper.audio import decode_audio
 
-            script = "\n".join(part["text"] for part in speech["parts"])
             timeline, diagnostics = repair_up_to_three_rounds(
                 timeline, script, duration, decode_audio(str(audio)), _model(), _aligner,
             )
